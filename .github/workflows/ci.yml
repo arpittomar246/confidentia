@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push: {branches: [main, "stage/**"]}
+  pull_request: {branches: [main]}
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.11"   # PySpark 3.5 does not support 3.12+ reliably
+  JAVA_VERSION: "17"       # Spark 3.5 supports Java 8/11/17 only
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - name: ruff
+        run: ruff check src tests
+      - name: ruff format
+        run: ruff format --check src tests
+      - name: mypy
+        run: mypy
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e ".[dev,generators]"
+      - run: pytest -m unit --cov=confidentia --cov-report=term-missing
+
+  # The encryption guarantee is a regression risk, not a one-off result. Delta
+  # silently wrote plaintext when the properties were passed as writer options
+  # (ADR 0007), so CI re-proves on every push that sensitive columns are absent
+  # from the bytes on disk and that a keyless read is refused.
+  encryption-guarantee:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e ".[spark,lake,dev]"
+      - name: Build the KMS client jar
+        run: python spikes/pme/build_kms_jar.py
+      - name: Write encrypted tables and verify the bytes
+        env:
+          SPIKE_WORK_DIR: ${{ runner.temp }}/spike
+        run: |
+          python spikes/pme/probes.py write-parquet
+          python spikes/pme/probes.py delta-hadoopconf
+      - name: Verify a keyless read is refused
+        env:
+          SPIKE_WORK_DIR: ${{ runner.temp }}/spike
+        # Separate process on purpose: Parquet's KeyToolkit caches unwrapped keys
+        # per JVM, so an in-process retry would read from cache and falsely pass.
+        run: |
+          python spikes/pme/probes.py keyless-read --table h_parquet_pme --format parquet
+          python spikes/pme/probes.py keyless-read --table g_delta_hadoopconf --format delta
+      - name: Inspect files for plaintext leakage
+        env:
+          SPIKE_WORK_DIR: ${{ runner.temp }}/spike
+        run: python spikes/pme/inspect_files.py "${{ runner.temp }}/spike"
+
+  compose-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate compose profiles
+        run: |
+          for profile in core batch stream bench demo; do
+            echo "--- $profile ---"
+            docker compose --profile "$profile" config --quiet
+          done

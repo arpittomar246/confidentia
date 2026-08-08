@@ -1,0 +1,206 @@
+# CONFIDENTIA -- containerised stack.
+#
+# This is the PORTABLE and CLOUD path, and it is validated in CI. It is not the
+# local development path: the development host has 7.4 GB of RAM, where Docker
+# Desktop's VM alone would take 1.5-2 GB before any service starts. Locally the
+# same services run as native processes inside WSL2 (see docs/adr/0001).
+#
+# Nothing here is ever brought up in full except under the `demo` profile. Each
+# service declares a hard memory limit so that an accidental `up` cannot swap the
+# host to death, and so that the memory budget is a reviewable part of the repo
+# rather than folklore.
+#
+#   docker compose --profile core   up -d     # Postgres + MinIO + API + UI
+#   docker compose --profile batch  up -d     # + Spark + Airflow
+#   docker compose --profile stream up -d     # + Kafka
+#   docker compose --profile bench  up -d     # measurement only: no UI, no scheduler
+#   docker compose --profile demo   up -d     # everything, including Grafana
+
+x-common-env: &common-env
+  CONFIDENTIA_ENV: local
+  CONFIDENTIA_DATA_ROOT: /data
+  CONFIDENTIA_LOG_JSON: "true"
+  POSTGRES_HOST: postgres
+  STORAGE_BACKEND: minio
+  STORAGE_ENDPOINT_URL: http://minio:9000
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
+volumes:
+  pgdata:
+  miniodata:
+  lakedata:
+  kafkadata:
+  promdata:
+  grafanadata:
+
+networks:
+  confidentia:
+    driver: bridge
+
+services:
+  # ------------------------------------------------------------------ core
+  postgres:
+    image: postgres:16-alpine
+    profiles: [core, batch, stream, bench, demo]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-confidentia}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-confidentia}
+      POSTGRES_DB: ${POSTGRES_DATABASE:-confidentia}
+    # wal_level=logical is required by the CDC path: the ingestion layer consumes
+    # the write-ahead log directly rather than polling an updated_at column.
+    command: >
+      postgres -c wal_level=logical
+               -c max_replication_slots=4
+               -c max_wal_senders=4
+               -c shared_buffers=128MB
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/sql/init:/docker-entrypoint-initdb.d:ro
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-confidentia}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits: {memory: 512M}
+    networks: [confidentia]
+
+  minio:
+    image: minio/minio:latest
+    profiles: [core, batch, stream, bench, demo]
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_KEY:-minioadmin}
+    volumes:
+      - miniodata:/data
+    ports: ["9000:9000", "9001:9001"]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits: {memory: 384M}
+    networks: [confidentia]
+
+  api:
+    build: {context: ., dockerfile: docker/backend/Dockerfile}
+    profiles: [core, batch, stream, demo]
+    environment:
+      <<: *common-env
+    volumes:
+      - lakedata:/data
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    deploy:
+      resources:
+        limits: {memory: 512M}
+    networks: [confidentia]
+
+  frontend:
+    build: {context: ./frontend, dockerfile: ../docker/frontend/Dockerfile}
+    profiles: [core, demo]
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+    ports: ["5173:5173"]
+    depends_on: [api]
+    deploy:
+      resources:
+        limits: {memory: 512M}
+    networks: [confidentia]
+
+  # ----------------------------------------------------------------- batch
+  spark:
+    build: {context: ., dockerfile: docker/spark/Dockerfile}
+    profiles: [batch, bench, demo]
+    environment:
+      <<: *common-env
+      SPARK_MASTER: local[2]
+      SPARK_DRIVER_MEMORY: 2g
+    volumes:
+      - lakedata:/data
+      - ./src:/opt/confidentia/src:ro
+    ports: ["4040:4040"]
+    deploy:
+      resources:
+        limits: {memory: 2560M}
+    networks: [confidentia]
+
+  airflow:
+    build: {context: ., dockerfile: docker/airflow/Dockerfile}
+    profiles: [batch, demo]
+    environment:
+      <<: *common-env
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+        postgresql+psycopg2://${POSTGRES_USER:-confidentia}:${POSTGRES_PASSWORD:-confidentia}@postgres:5432/airflow
+    volumes:
+      - ./orchestration/dags:/opt/airflow/dags:ro
+      - lakedata:/data
+    ports: ["8080:8080"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    deploy:
+      resources:
+        limits: {memory: 1280M}
+    networks: [confidentia]
+
+  # ---------------------------------------------------------------- stream
+  kafka:
+    image: apache/kafka:3.8.0
+    profiles: [stream, demo]
+    environment:
+      # KRaft: no ZooKeeper, one less JVM and ~300 MB saved.
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms512m"
+    volumes:
+      - kafkadata:/var/lib/kafka/data
+    ports: ["9092:9092"]
+    deploy:
+      resources:
+        limits: {memory: 768M}
+    networks: [confidentia]
+
+  # ------------------------------------------------------------ monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    profiles: [demo]
+    volumes:
+      - ./monitoring/prometheus:/etc/prometheus:ro
+      - promdata:/prometheus
+    ports: ["9090:9090"]
+    deploy:
+      resources:
+        limits: {memory: 384M}
+    networks: [confidentia]
+
+  grafana:
+    image: grafana/grafana:latest
+    profiles: [demo]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana:/etc/grafana/provisioning:ro
+      - grafanadata:/var/lib/grafana
+    ports: ["3000:3000"]
+    depends_on: [prometheus]
+    deploy:
+      resources:
+        limits: {memory: 256M}
+    networks: [confidentia]

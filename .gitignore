@@ -1,0 +1,67 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- Node / frontend ---
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# --- Java build output from the KMS client ---
+spikes/pme/build/
+*.class
+*.jar
+
+# --- Secrets. Never commit. ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+!**/public*.key
+keystore/
+secrets/
+# Spike/test key material. Ephemeral and regenerated on demand, but key material
+# must never enter history in this of all projects.
+spike_keys.json
+*_keys.json
+
+# --- Data. The lakehouse lives outside the repo (see CONFIDENTIA_DATA_ROOT),
+# but guard against anything landing here by accident. ---
+data/
+*.parquet
+*.delta/
+_delta_log/
+checkpoints/
+spark-warehouse/
+spark-tmp/
+derby.log
+metastore_db/
+
+# --- Benchmark and spike output: results are committed deliberately via
+# `git add -f`, so that a reported number is always traceable to a run. ---
+spikes/**/spike_results.json
+benchmarks/results/*.json
+!benchmarks/results/.gitkeep
+
+# --- Airflow ---
+orchestration/logs/
+airflow.db
+airflow.cfg
+webserver_config.py
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/settings.json.example
