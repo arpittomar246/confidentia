@@ -187,5 +187,171 @@ def profile_dataset(
             typer.echo(f"  {kind:26s} {count:>8,}  ({share:.3%} of rows)")
 
 
+db_app = typer.Typer(help="Platform metadata store.", no_args_is_help=True)
+ingest_app = typer.Typer(help="Ingestion collectors.", no_args_is_help=True)
+app.add_typer(db_app, name="db")
+app.add_typer(ingest_app, name="ingest")
+
+
+@db_app.command("migrate")
+def db_migrate() -> None:
+    """Apply pending SQL migrations to the platform and OLTP databases."""
+    from confidentia.store import migrations
+
+    applied = migrations.migrate()
+    for item in applied:
+        typer.echo(f"applied {item}")
+    if not applied:
+        typer.echo("already up to date")
+
+
+@db_app.command("status")
+def db_status() -> None:
+    """Show migration state and connectivity."""
+    from confidentia.store import db as store_db
+    from confidentia.store import migrations
+
+    settings = get_settings()
+    typer.echo(f"platform db : {settings.postgres.database}  reachable={store_db.healthcheck()}")
+    typer.echo(
+        f"oltp db     : {settings.postgres.oltp_database}  "
+        f"reachable={store_db.healthcheck(settings.postgres.oltp_database)}"
+    )
+    typer.echo("")
+    for row in migrations.status():
+        state = "DRIFTED" if row["drifted"] else ("applied" if row["applied"] else "pending")
+        typer.echo(f"  {row['version']:24s} {row['database']:14s} {state}")
+
+
+@ingest_app.command("file")
+def ingest_file(
+    tenant: Annotated[str, typer.Argument(help="healthcare | financial")],
+    dataset: Annotated[str | None, typer.Argument(help="Dataset, or omit for all.")] = None,
+    no_verify: Annotated[bool, typer.Option("--no-verify", help="Skip checksum verification.")] = False,
+) -> None:
+    """Ingest batch file drops, verifying checksums and skipping duplicates."""
+    from confidentia.ingestion.file_collector import FileCollector
+
+    collector = FileCollector(verify_checksums=not no_verify)
+    datasets = [dataset] if dataset else collector.available_datasets(tenant)
+    if not datasets:
+        typer.echo(f"no datasets with a manifest under {tenant}")
+        raise typer.Exit(1)
+
+    for name in datasets:
+        result = collector.collect(tenant, name)
+        typer.echo(f"  {result.summary()}")
+
+
+@ingest_app.command("rest")
+def ingest_rest(
+    tenant: Annotated[str, typer.Argument()],
+    dataset: Annotated[str, typer.Argument()],
+    base_url: Annotated[str, typer.Option(help="Source API base URL.")] = "http://localhost:8081",
+    page_size: Annotated[int, typer.Option(help="Records per page.")] = 1000,
+    full_refresh: Annotated[bool, typer.Option(help="Ignore the stored watermark.")] = False,
+) -> None:
+    """Ingest from the paged REST source, resuming from the stored watermark."""
+    from confidentia.ingestion.rest_collector import RestCollector
+
+    collector = RestCollector(base_url=base_url, page_size=page_size)
+    result = collector.collect(tenant, dataset, full_refresh=full_refresh)
+    typer.echo(f"  {result.summary()}")
+    for key, value in result.detail.items():
+        typer.echo(f"    {key}: {value}")
+
+
+@ingest_app.command("cdc")
+def ingest_cdc(
+    max_events: Annotated[int, typer.Option(help="Stop after this many change events.")] = 100_000,
+    idle_timeout: Annotated[float, typer.Option(help="Seconds of silence before stopping.")] = 3.0,
+) -> None:
+    """Consume PostgreSQL logical replication and land the change events."""
+    from confidentia.ingestion.cdc_collector import CdcCollector
+
+    collector = CdcCollector(max_events=max_events, idle_timeout_seconds=idle_timeout)
+    result = collector.collect()
+    typer.echo(f"  {result.summary()}")
+    for key, value in result.detail.items():
+        typer.echo(f"    {key}: {value}")
+    lag = collector.slot_lag_bytes()
+    if lag is not None:
+        typer.echo(f"    slot lag: {lag:,} bytes")
+
+
+@ingest_app.command("slot")
+def ingest_slot(
+    action: Annotated[str, typer.Argument(help="create | drop | status")],
+) -> None:
+    """Manage the logical replication slot.
+
+    A slot pins write-ahead log on the source until consumed, so creating one and
+    walking away will eventually fill the source system's disk. Management is
+    explicit for that reason.
+    """
+    from confidentia.ingestion.cdc_collector import CdcCollector
+
+    collector = CdcCollector()
+    if action == "create":
+        typer.echo("created" if collector.ensure_slot() else "already exists")
+    elif action == "drop":
+        collector.drop_slot()
+        typer.echo("dropped")
+    else:
+        lag = collector.slot_lag_bytes()
+        typer.echo(f"slot   : {collector.slot_name}")
+        typer.echo(f"lag    : {lag:,} bytes" if lag is not None else "lag    : slot absent")
+
+
+@ingest_app.command("oltp")
+def ingest_oltp(
+    action: Annotated[str, typer.Argument(help="seed | mutate | count")],
+    limit: Annotated[int | None, typer.Option(help="Cap mutations applied.")] = None,
+) -> None:
+    """Seed and mutate the source-of-record OLTP database (the CDC source)."""
+    from confidentia.ingestion import oltp_loader
+
+    if action == "seed":
+        typer.echo(f"loaded {oltp_loader.load_patients():,} patients")
+    elif action == "mutate":
+        typer.echo(f"applied {oltp_loader.replay_mutations(limit=limit):,} mutations")
+    else:
+        typer.echo(f"{oltp_loader.patient_count():,} patients in the OLTP source")
+
+
+@app.command("runs")
+def list_runs(
+    limit: Annotated[int, typer.Option(help="How many recent runs to show.")] = 15,
+) -> None:
+    """Recent pipeline runs from the platform metadata store."""
+    from confidentia.store import db as store_db
+
+    rows = store_db.fetch_all(
+        """
+        SELECT run_type, source, tenant, dataset, status, duration_ms,
+               records_read, records_written, records_rejected, started_at
+          FROM platform.run_summary
+         ORDER BY started_at DESC
+         LIMIT %s
+        """,
+        (limit,),
+    )
+    if not rows:
+        typer.echo("no runs recorded")
+        return
+
+    typer.echo(
+        f"{'started':20s} {'type':10s} {'source':10s} {'dataset':18s} "
+        f"{'status':10s} {'ms':>8s} {'read':>10s} {'written':>10s}"
+    )
+    for row in rows:
+        typer.echo(
+            f"{row['started_at']:%Y-%m-%d %H:%M:%S}  {row['run_type']:10s} "
+            f"{(row['source'] or '-'):10s} {row['dataset'][:18]:18s} {row['status']:10s} "
+            f"{int(row['duration_ms'] or 0):>8,} {row['records_read']:>10,} "
+            f"{row['records_written']:>10,}"
+        )
+
+
 if __name__ == "__main__":
     app()
