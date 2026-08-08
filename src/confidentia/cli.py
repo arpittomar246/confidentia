@@ -319,6 +319,148 @@ def ingest_oltp(
         typer.echo(f"{oltp_loader.patient_count():,} patients in the OLTP source")
 
 
+keys_app = typer.Typer(help="Key hierarchy and attestation policy.", no_args_is_help=True)
+bronze_app = typer.Typer(help="Bronze layer.", no_args_is_help=True)
+app.add_typer(keys_app, name="keys")
+app.add_typer(bronze_app, name="bronze")
+
+
+@keys_app.command("init")
+def keys_init(
+    force: Annotated[bool, typer.Option(help="Overwrite an existing keystore.")] = False,
+) -> None:
+    """Generate the master key and seal the keystore.
+
+    Overwriting makes every existing encrypted file permanently unreadable, which
+    is why --force exists and is not the default.
+    """
+    from confidentia.crypto.keys import Keystore
+
+    keystore = Keystore()
+    keystore.initialise(force=force)
+    for key, value in keystore.metadata().items():
+        typer.echo(f"  {key:16s} {value}")
+
+
+@keys_app.command("status")
+def keys_status() -> None:
+    """Keystore state and the current code measurement."""
+    from confidentia.crypto.attestation import measure_code
+    from confidentia.crypto.broker import KeyBroker
+    from confidentia.crypto.keys import Keystore
+
+    settings = get_settings()
+    for key, value in Keystore().metadata().items():
+        typer.echo(f"  {key:18s} {value}")
+
+    measurement = measure_code()
+    policy = KeyBroker().policy_for(measurement)
+    typer.echo(f"  {'measurement':18s} {measurement}")
+    typer.echo(f"  {'approved':18s} {policy is not None}")
+    if policy:
+        typer.echo(f"  {'approved for':18s} {policy['tenants']}")
+        typer.echo(f"  {'approved by':18s} {policy['approved_by']}")
+    typer.echo(f"  {'tee backend':18s} {settings.tee.backend.value}")
+    typer.echo(
+        f"  {'hardware rooted':18s} {settings.tee.is_measured}"
+        + ("" if settings.tee.is_measured else "   (measurement is self-reported)")
+    )
+
+
+@keys_app.command("approve")
+def keys_approve(
+    approved_by: Annotated[str, typer.Option(help="Who is approving this build.")] = "developer",
+    tenants: Annotated[str, typer.Option(help="Comma-separated tenants, or '*'.")] = "*",
+) -> None:
+    """Approve the currently running code for key release.
+
+    Needed after any change to a measured package (crypto, pipelines, quality,
+    lineage). That inconvenience is the feature: it is what makes "which code
+    touched this data" enforceable rather than merely recorded.
+    """
+    from confidentia.crypto.broker import KeyBroker
+
+    broker = KeyBroker()
+    measurement = broker.approve_current_code(approved_by=approved_by)
+    if tenants != "*":
+        broker.approve(
+            measurement,
+            description="current working tree",
+            tenants=[t.strip() for t in tenants.split(",")],
+            approved_by=approved_by,
+        )
+    typer.echo(f"approved {measurement}")
+    typer.echo(f"  for tenants: {tenants}")
+
+
+@keys_app.command("audit")
+def keys_audit(
+    limit: Annotated[int, typer.Option()] = 20,
+    denied_only: Annotated[bool, typer.Option(help="Show refusals only.")] = False,
+) -> None:
+    """Key release decisions, including the refusals."""
+    from confidentia.store import db as store_db
+
+    where = "WHERE granted = FALSE" if denied_only else ""
+    rows = store_db.fetch_all(
+        f"""
+        SELECT requested_at, tenant, granted, reason, measurement, hardware_rooted
+          FROM platform.key_release_audit {where}
+         ORDER BY requested_at DESC LIMIT %s
+        """,
+        (limit,),
+    )
+    if not rows:
+        typer.echo("no key release attempts recorded")
+        return
+    for row in rows:
+        mark = "GRANT " if row["granted"] else "DENY  "
+        typer.echo(
+            f"{row['requested_at']:%Y-%m-%d %H:%M:%S}  {mark} "
+            f"{row['tenant']:12s} {row['measurement'][:12]}  {row['reason'][:70]}"
+        )
+
+
+@bronze_app.command("write")
+def bronze_write(
+    tenant: Annotated[str, typer.Argument(help="healthcare | financial")],
+    dataset: Annotated[str | None, typer.Argument(help="Dataset, or omit for all.")] = None,
+    full_refresh: Annotated[bool, typer.Option(help="Rewrite rather than append.")] = False,
+) -> None:
+    """Promote landed batches into the encrypted Bronze Delta table."""
+    from confidentia.catalog.contracts import all_contracts
+    from confidentia.pipelines.bronze.writer import write_bronze
+
+    datasets = (
+        [dataset]
+        if dataset
+        else [c.dataset for c in all_contracts() if c.tenant.value == tenant]
+    )
+    for name in datasets:
+        try:
+            result = write_bronze(tenant, name, full_refresh=full_refresh)
+            typer.echo(f"  {result.summary()}")
+        except FileNotFoundError as exc:
+            typer.echo(f"  {tenant}/{name}: skipped ({exc})")
+
+
+@bronze_app.command("verify")
+def bronze_verify(
+    tenant: Annotated[str, typer.Argument()],
+    dataset: Annotated[str, typer.Argument()],
+) -> None:
+    """Check the bytes on disk are actually encrypted."""
+    from confidentia.pipelines.bronze.writer import bronze_path, verify_encrypted
+
+    path = bronze_path(tenant, dataset)
+    if not path.exists():
+        typer.echo(f"no Bronze table at {path}")
+        raise typer.Exit(1)
+    ok, detail = verify_encrypted(path)
+    typer.echo(f"  {'ENCRYPTED' if ok else 'NOT ENCRYPTED'}  {detail}")
+    raise typer.Exit(0 if ok else 1)
+
+
 @app.command("runs")
 def list_runs(
     limit: Annotated[int, typer.Option(help="How many recent runs to show.")] = 15,
