@@ -40,9 +40,7 @@ def find_java_home() -> Path:
         if base.exists():
             candidates.extend(p for p in base.iterdir() if p.is_dir() and "17" in p.name)
     if not candidates:
-        raise SystemExit(
-            "No JDK 17 found. Install Temurin 17 or set CONFIDENTIA_JAVA_HOME."
-        )
+        raise SystemExit("No JDK 17 found. Install Temurin 17 or set CONFIDENTIA_JAVA_HOME.")
     return sorted(candidates)[-1]
 
 
@@ -72,9 +70,14 @@ def main() -> int:
     compile_cmd = [
         str(javac),
         "-nowarn",
-        "-source", "17", "-target", "17",
-        "-cp", classpath,
-        "-d", str(BUILD),
+        "-source",
+        "17",
+        "-target",
+        "17",
+        "-cp",
+        classpath,
+        "-d",
+        str(BUILD),
         str(SRC),
     ]
     result = subprocess.run(compile_cmd, capture_output=True, text=True)

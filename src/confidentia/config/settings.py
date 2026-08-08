@@ -52,17 +52,17 @@ class ComposeProfile(StrEnum):
     error.
     """
 
-    CORE = "core"      # Postgres + MinIO + API + UI
-    BATCH = "batch"    # core + Spark + Airflow
+    CORE = "core"  # Postgres + MinIO + API + UI
+    BATCH = "batch"  # core + Spark + Airflow
     STREAM = "stream"  # core + Kafka + Spark Structured Streaming
-    BENCH = "bench"    # Postgres + MinIO + Spark only; no UI, no scheduler
-    DEMO = "demo"      # everything, including Prometheus/Grafana
+    BENCH = "bench"  # Postgres + MinIO + Spark only; no UI, no scheduler
+    DEMO = "demo"  # everything, including Prometheus/Grafana
 
 
 class TeeBackend(StrEnum):
-    SIM = "sim"                  # calibrated cost model; NOT a real enclave
+    SIM = "sim"  # calibrated cost model; NOT a real enclave
     GRAMINE_SGX = "gramine-sgx"  # Intel SGX via Gramine LibOS
-    SNP_CVM = "snp-cvm"          # AMD SEV-SNP confidential VM
+    SNP_CVM = "snp-cvm"  # AMD SEV-SNP confidential VM
 
 
 class Tenant(StrEnum):
@@ -303,7 +303,9 @@ class Settings(BaseSettings):
     log_json: bool = False
 
     # Kept off OneDrive on purpose. See module docstring.
-    data_root: Path = Path("C:/confidentia-data") if os.name == "nt" else Path("/var/lib/confidentia")
+    data_root: Path = (
+        Path("C:/confidentia-data") if os.name == "nt" else Path("/var/lib/confidentia")
+    )
 
     spark: SparkSettings = Field(default_factory=SparkSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)

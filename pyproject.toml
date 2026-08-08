@@ -89,12 +89,13 @@ src = ["src", "tests", "backend"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "N", "SIM", "RUF", "BLE"]
-ignore = ["E501"]
+# E501  line length is handled by the formatter.
+# N812  `from pyspark.sql import functions as F` is the universal PySpark idiom;
+#       renaming it would make every transformation unidiomatic.
+ignore = ["E501", "N812"]
 
-[tool.ruff.lint.per-file-ignores]
-# Spikes and probes deliberately catch broad exceptions: their job is to report
-# what a subsystem does when it fails, not to propagate the failure.
-"spikes/**" = ["BLE001"]
+# BLE001 stays enabled globally so that broad excepts must be justified with an
+# explicit noqa at the site, rather than blanket-permitted by directory.
 
 [tool.mypy]
 python_version = "3.11"

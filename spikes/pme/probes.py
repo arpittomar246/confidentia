@@ -115,8 +115,7 @@ def make_dataframe(spark, rows: int):
 
 def column_keys_property() -> str:
     return (
-        f"{KEY_IDENTITY}:{','.join(IDENTITY_COLUMNS)};"
-        f"{KEY_CLINICAL}:{','.join(CLINICAL_COLUMNS)}"
+        f"{KEY_IDENTITY}:{','.join(IDENTITY_COLUMNS)};{KEY_CLINICAL}:{','.join(CLINICAL_COLUMNS)}"
     )
 
 
@@ -130,7 +129,11 @@ def magic_of(directory: Path) -> str:
 
 def has_plaintext(directory: Path) -> list[str]:
     """Which sensitive values survive verbatim into the bytes."""
-    needles = {"patient_name": b"Patient_1234", "note": b"clinical note body", "diagnosis": b"J45.909"}
+    needles = {
+        "patient_name": b"Patient_1234",
+        "note": b"clinical note body",
+        "diagnosis": b"J45.909",
+    }
     files = sorted(directory.rglob("*.parquet"))
     if not files:
         return []

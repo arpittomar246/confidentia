@@ -46,9 +46,9 @@ ROWS = int(os.environ.get("SPIKE_ROWS", "50000"))
 # Column sensitivity for the healthcare tenant, mirroring the classification the
 # Silver layer will use. Two distinct keys so the spike proves key *separation*,
 # not merely that encryption is on.
-KEY_IDENTITY = "k_identity"   # direct identifiers
-KEY_CLINICAL = "k_clinical"   # clinical payload
-KEY_FOOTER = "k_footer"       # schema/metadata
+KEY_IDENTITY = "k_identity"  # direct identifiers
+KEY_CLINICAL = "k_clinical"  # clinical payload
+KEY_FOOTER = "k_footer"  # schema/metadata
 
 IDENTITY_COLUMNS = ["mrn", "patient_name", "ssn"]
 CLINICAL_COLUMNS = ["diagnosis_code", "note"]
@@ -175,8 +175,7 @@ def make_dataframe(spark, rows: int):
 
 def column_keys_property() -> str:
     return (
-        f"{KEY_IDENTITY}:{','.join(IDENTITY_COLUMNS)};"
-        f"{KEY_CLINICAL}:{','.join(CLINICAL_COLUMNS)}"
+        f"{KEY_IDENTITY}:{','.join(IDENTITY_COLUMNS)};{KEY_CLINICAL}:{','.join(CLINICAL_COLUMNS)}"
     )
 
 
@@ -308,7 +307,12 @@ def arm_e_delta_rs(work_dir: Path) -> None:
     """
     path = work_dir / "d_delta_pme"
     if not path.exists():
-        record("E", "delta-rs (no JVM) reading encrypted Delta", False, "skipped: arm D produced no table")
+        record(
+            "E",
+            "delta-rs (no JVM) reading encrypted Delta",
+            False,
+            "skipped: arm D produced no table",
+        )
         return
     try:
         from deltalake import DeltaTable
