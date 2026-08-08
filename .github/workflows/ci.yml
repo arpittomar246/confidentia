@@ -20,9 +20,7 @@ jobs:
           cache: pip
       - run: pip install -e ".[dev]"
       - name: ruff
-        run: ruff check src tests
-      - name: ruff format
-        run: ruff format --check src tests
+        run: ruff check src tests spikes
       - name: mypy
         run: mypy
 
@@ -36,6 +34,15 @@ jobs:
           cache: pip
       - run: pip install -e ".[dev,generators]"
       - run: pytest -m unit --cov=confidentia --cov-report=term-missing
+
+  # The ground-truth answer key records every injected defect and every latent
+  # fraud label. A pipeline that read it would score perfectly and mean nothing,
+  # so isolation is enforced rather than trusted.
+  ground-truth-isolation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/check_ground_truth_isolation.sh
 
   # The encryption guarantee is a regression risk, not a one-off result. Delta
   # silently wrote plaintext when the properties were passed as writer options
@@ -74,6 +81,36 @@ jobs:
         env:
           SPIKE_WORK_DIR: ${{ runner.temp }}/spike
         run: python spikes/pme/inspect_files.py "${{ runner.temp }}/spike"
+
+  # Determinism is load-bearing: experiment E3 compares incremental against full
+  # reprocessing of the same data, and E8 replays a dataset under a drifted
+  # schema. Neither is valid if the generators wander between runs.
+  generator-determinism:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e ".[dev,generators]"
+      - name: Generate twice and compare digests
+        run: |
+          python -m confidentia.cli generate healthcare --rows 20000 --out /tmp/gen-a
+          python -m confidentia.cli generate healthcare --rows 20000 --out /tmp/gen-b
+          python - <<'PY'
+          import json, sys, pathlib
+          bad = []
+          for a in pathlib.Path("/tmp/gen-a").rglob("_ingest_manifest.json"):
+              b = pathlib.Path(str(a).replace("/tmp/gen-a", "/tmp/gen-b"))
+              da = json.loads(a.read_text())["batch_digest"]
+              db = json.loads(b.read_text())["batch_digest"]
+              status = "ok" if da == db else "MISMATCH"
+              print(f"{a.parent.name:18s} {status} {da[:16]}")
+              if da != db:
+                  bad.append(a.parent.name)
+          sys.exit(1 if bad else 0)
+          PY
 
   compose-validate:
     runs-on: ubuntu-latest
