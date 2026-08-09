@@ -534,6 +534,82 @@ def silver_quarantine(
         )
 
 
+gold_app = typer.Typer(help="Gold layer.", no_args_is_help=True)
+app.add_typer(gold_app, name="gold")
+
+
+@gold_app.command("build")
+def gold_build(
+    tenant: Annotated[str, typer.Argument(help="healthcare | financial")],
+) -> None:
+    """Build the star schema and publish disclosure-controlled marts."""
+    from confidentia.pipelines.gold.writer import build_gold
+
+    result = build_gold(tenant)
+    typer.echo(f"  {result.summary()}")
+    typer.echo("")
+    typer.echo("  star tables:")
+    for table, rows in sorted(result.tables_built.items()):
+        typer.echo(f"    {table:22s} {rows:>10,} rows")
+    typer.echo("")
+    typer.echo("  published marts:")
+    for mart, rows in sorted(result.marts_published.items()):
+        typer.echo(f"    {mart:26s} {rows:>8,} rows")
+    typer.echo("")
+    typer.echo("  disclosure:")
+    for line in result.suppression.values():
+        typer.echo(f"    {line}")
+
+
+@gold_app.command("disclosure")
+def gold_disclosure(limit: Annotated[int, typer.Option()] = 15) -> None:
+    """What each publish released and what it withheld."""
+    from confidentia.store import db as store_db
+
+    rows = store_db.fetch_all(
+        """
+        SELECT tenant, mart, min_cell_count, total_cells, primary_suppressed,
+               complementary_suppressed, rows_published, published_at
+          FROM platform.disclosure_log ORDER BY published_at DESC LIMIT %s
+        """,
+        (limit,),
+    )
+    if not rows:
+        typer.echo("nothing published yet")
+        return
+    typer.echo(f"{'mart':28s} {'k':>3s} {'cells':>8s} {'primary':>8s} {'compl.':>8s} {'published':>10s}")
+    for row in rows:
+        typer.echo(
+            f"{row['mart']:28s} {row['min_cell_count']:>3d} {row['total_cells']:>8,} "
+            f"{row['primary_suppressed']:>8,} {row['complementary_suppressed']:>8,} "
+            f"{row['rows_published']:>10,}"
+        )
+
+
+@gold_app.command("restatements")
+def gold_restatements(limit: Annotated[int, typer.Option()] = 10) -> None:
+    """Aggregates invalidated by late-arriving facts."""
+    from confidentia.store import db as store_db
+
+    rows = store_db.fetch_all(
+        """
+        SELECT tenant, mart, partitions_restated, trigger_reason,
+               oldest_partition, newest_partition, lag_days, restated_at
+          FROM platform.restatement_log ORDER BY restated_at DESC LIMIT %s
+        """,
+        (limit,),
+    )
+    if not rows:
+        typer.echo("no restatements recorded")
+        return
+    for row in rows:
+        typer.echo(
+            f"  {row['mart']:26s} {row['partitions_restated']:>4} partitions  "
+            f"{row['oldest_partition']} -> {row['newest_partition']} "
+            f"({row['lag_days']} day span)  {row['trigger_reason']}"
+        )
+
+
 @app.command("runs")
 def list_runs(
     limit: Annotated[int, typer.Option(help="How many recent runs to show.")] = 15,
