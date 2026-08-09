@@ -492,10 +492,13 @@ def silver_write(
     datasets = (
         [dataset]
         if dataset
+        # Reference tables stop at Bronze: they exist so the referential rules
+        # have a parent to check, and Gold builds its own dimensions from the
+        # star schema rather than from them.
         else [
             c.dataset
             for c in all_contracts()
-            if c.tenant.value == tenant and c.dataset != "patient_cdc"
+            if c.tenant.value == tenant and c.dataset != "patient_cdc" and not c.is_reference
         ]
     )
     for name in datasets:

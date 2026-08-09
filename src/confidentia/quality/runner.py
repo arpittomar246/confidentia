@@ -104,12 +104,69 @@ def register_rules(rules: list[Rule]) -> None:
         )
 
 
-def _uniqueness_detections(frame: DataFrame, contract, tenant: str) -> tuple[DataFrame, Rule]:
-    """Duplicate business keys. Needs a window, so it cannot be a row-level rule."""
+# Foreign keys, as (child column, parent dataset, parent key column).
+#
+# Stage 7b found this map was the *whole* of `referential_orphan`'s recall
+# problem: it scored 1.000 wherever a relationship was declared and 0.000 wherever
+# one was not, and only two of the five foreign keys the generator corrupts were
+# declared. The four missing ones all pointed at reference tables that had no
+# contract and so were never promoted to Bronze; Stage 7c added those contracts,
+# which is what makes these declarations resolvable rather than skipped.
+#
+# Module level so the plan/rule coverage test can read it. A relationship the
+# generator corrupts but nobody declares is invisible in a rule count and shows up
+# only as unexplained missing recall.
+REFERENTIAL_RELATIONSHIPS: dict[str, list[tuple[str, str, str]]] = {
+    "encounter": [
+        ("patient_id", "patient", "patient_id"),
+        ("provider_id", "provider", "provider_id"),
+        ("facility_id", "facility", "facility_id"),
+    ],
+    "patient": [
+        ("plan_id", "insurance_plan", "plan_id"),
+        ("primary_care_provider_id", "provider", "provider_id"),
+    ],
+    "provider": [("facility_id", "facility", "facility_id")],
+    "claim_line": [("encounter_id", "encounter", "encounter_id")],
+    "transaction": [
+        ("account_id", "account", "account_id"),
+        ("merchant_id", "merchant", "merchant_id"),
+    ],
+    "chargeback": [("transaction_id", "transaction", "transaction_id")],
+}
+
+
+def _uniqueness_detections(
+    frame: DataFrame, contract, tenant: str, layer: str = "bronze"
+) -> tuple[DataFrame, Rule]:
+    """Duplicate business keys. Needs a window, so it cannot be a row-level rule.
+
+    **At Bronze, uniqueness is per source system.** Bronze is defined as "exactly
+    what arrived", and what arrived may legitimately be the same records from more
+    than one collector: the file drop and the REST API each delivered all 60,000
+    encounters, so every business key genuinely appears twice. Counting duplicates
+    across sources therefore flags the entire table.
+
+    Stage 7b measured what that costs: precision **0.007** on
+    `encounter/duplicate_record` — 399 injected duplicates against 59,601 rows
+    that were merely redelivered — which alone dragged the dataset's overall
+    precision to 0.053. The rule was not wrong; it was answering the wrong
+    question for the layer.
+
+    Partitioning by source restores the question worth asking at Bronze: *did this
+    source send me the same business key twice*. Cross-source deduplication is
+    Silver's job and Silver already does it (120,798 -> 59,121), so nothing is
+    lost — the check simply happens at the layer whose contract makes it
+    meaningful.
+    """
     from pyspark.sql import Window
     from pyspark.sql import functions as F
 
     key = contract.business_key[0]
+    # Silver has already collapsed the sources, so the plain key is right there.
+    per_source = layer == "bronze" and "_source_system" in frame.columns
+    partition = [key, "_source_system"] if per_source else [key]
+
     rule = Rule(
         rule_id=f"{tenant}.{contract.dataset}.duplicate_record.{key}",
         dataset=contract.dataset,
@@ -117,12 +174,16 @@ def _uniqueness_detections(frame: DataFrame, contract, tenant: str) -> tuple[Dat
         dimension=Dimension.UNIQUENESS,
         family="duplicate_record",
         severity=Severity.MAJOR,
-        description=f"{key} appears more than once",
+        description=(
+            f"{key} appears more than once from the same source system"
+            if per_source
+            else f"{key} appears more than once"
+        ),
         predicate=lambda: F.lit(False),
         field=key,
     )
     counted = frame.withColumn(
-        "_key_count", F.count(F.lit(1)).over(Window.partitionBy(key))
+        "_key_count", F.count(F.lit(1)).over(Window.partitionBy(*partition))
     )
     detections = (
         counted.filter(F.col("_key_count") > 1)
@@ -149,13 +210,7 @@ def _referential_detections(
     """
     from pyspark.sql import functions as F
 
-    # (foreign key column, parent dataset, parent key column)
-    relationships = {
-        "encounter": [("patient_id", "patient", "patient_id")],
-        "claim_line": [("encounter_id", "encounter", "encounter_id")],
-        "transaction": [("account_id", "account", "account_id")],
-        "chargeback": [("transaction_id", "transaction", "transaction_id")],
-    }.get(contract.dataset, [])
+    relationships = REFERENTIAL_RELATIONSHIPS.get(contract.dataset, [])
 
     frames: list[DataFrame] = []
     rules: list[Rule] = []
@@ -332,7 +387,9 @@ def run_quality(
                     )
 
             # Uniqueness and integrity need more than one row.
-            unique_detections, unique_rule = _uniqueness_detections(frame, contract, tenant)
+            unique_detections, unique_rule = _uniqueness_detections(
+                frame, contract, tenant, layer
+            )
             unique_failed = unique_detections.count()
             rules.append(unique_rule)
             outcomes.append(

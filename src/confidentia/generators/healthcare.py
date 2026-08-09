@@ -470,15 +470,26 @@ def _patient_defect_plan() -> DefectPlan:
         tenant=Tenant.HEALTHCARE.value,
         key_field="patient_id",
         fields=(
+            # No CASE_INCONSISTENCY on names: the platform's casing convention
+            # applies to *categorical* columns, which Silver lower-cases. A patient
+            # called JANE is unusual, not wrong, and no rule claims otherwise --
+            # so injecting it would be a defect nothing is allowed to catch.
             FieldRole("first_name", (DefectType.NULL_VIOLATION, DefectType.WHITESPACE_PADDING,
-                                     DefectType.CASE_INCONSISTENCY, DefectType.ENCODING_CORRUPTION)),
-            FieldRole("last_name", (DefectType.WHITESPACE_PADDING, DefectType.CASE_INCONSISTENCY,
+                                     DefectType.ENCODING_CORRUPTION)),
+            FieldRole("last_name", (DefectType.WHITESPACE_PADDING,
                                     DefectType.ENCODING_CORRUPTION)),
-            FieldRole("email", (DefectType.NULL_VIOLATION, DefectType.FORMAT_VIOLATION)),
-            FieldRole("phone", (DefectType.NULL_VIOLATION, DefectType.FORMAT_VIOLATION)),
-            FieldRole("ssn", (DefectType.FORMAT_VIOLATION, DefectType.NULL_VIOLATION)),
+            # No NULL_VIOLATION on these three: the contract marks them nullable,
+            # so a missing patient email is permitted data, not a defect. Injecting
+            # one would put a defect in the answer key that no derived completeness
+            # rule can ever exist for. See test_generators.py's plan/contract
+            # agreement test, which pins this.
+            FieldRole("email", (DefectType.FORMAT_VIOLATION,)),
+            FieldRole("phone", (DefectType.FORMAT_VIOLATION,)),
+            FieldRole("ssn", (DefectType.FORMAT_VIOLATION,)),
             FieldRole("postal_code", (DefectType.FORMAT_VIOLATION, DefectType.WHITESPACE_PADDING)),
-            FieldRole("state", (DefectType.CASE_INCONSISTENCY,)),
+            # `state` is a two-letter code that is upper-case by convention, so
+            # upper-casing it was a no-op the manifest recorded as a defect.
+            FieldRole("state", (DefectType.WHITESPACE_PADDING,)),
             FieldRole("plan_id", (DefectType.REFERENTIAL_ORPHAN,)),
             FieldRole("primary_care_provider_id", (DefectType.REFERENTIAL_ORPHAN,)),
         ),
@@ -522,3 +533,13 @@ def _claim_defect_plan() -> DefectPlan:
             FieldRole("denial_reason", (DefectType.WHITESPACE_PADDING,)),
         ),
     )
+
+
+def defect_plans() -> list[DefectPlan]:
+    """Every healthcare defect plan, for cross-checking against the contracts.
+
+    A plan that targets a column the contract permits to be null (or does not
+    have) injects a defect no derived rule can ever exist for. That is a permanent
+    false negative, invisible until Stage 7b measured it.
+    """
+    return [_patient_defect_plan(), _encounter_defect_plan(), _claim_defect_plan()]

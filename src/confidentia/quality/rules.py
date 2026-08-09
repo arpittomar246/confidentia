@@ -98,6 +98,24 @@ FIELD_PATTERNS: dict[str, str] = {
 # Columns whose values must be non-negative, with a plausible upper bound. The
 # bounds are generous on purpose -- they exist to catch unit errors and sign
 # errors, not to encode a business policy.
+# Above this, a value looks like cents reported as units. Per column, not one
+# global constant, for a reason Stage 7b measured: at a flat 50,000 the rule
+# scored precision 1.000 on `transaction.amount` and 0.093 on
+# `claim_line.billed_amount`, because a clinical bill legitimately exceeds 50,000
+# and a retail card transaction does not. One threshold across datasets is not
+# merely weak, it is wrong in different directions at once.
+#
+# Still a fixed threshold, and still the family expected to score worst. A
+# distribution-aware check (median absolute deviation, or reconciling
+# billed/allowed/paid) is the real fix and is deliberately left as future work --
+# Stage 7c widened the *coverage* of this rule, not its method.
+UNIT_THRESHOLDS: dict[str, float] = {
+    "billed_amount": 150_000.0,
+    "allowed_amount": 120_000.0,
+    "amount": 50_000.0,
+    "credit_limit": 250_000.0,
+}
+
 NUMERIC_RANGES: dict[str, tuple[float, float]] = {
     "billed_amount": (0.0, 500_000.0),
     "allowed_amount": (0.0, 500_000.0),
@@ -320,7 +338,7 @@ def consistency_rules(contract: SchemaContract) -> list[Rule]:
     # distribution-aware check finds it: flag amounts implausibly far above the
     # column's own median. This is the rule expected to score worst, and that is
     # the interesting part rather than a reason to omit it.
-    for field in ("billed_amount", "amount"):
+    for field, threshold in UNIT_THRESHOLDS.items():
         if field not in present:
             continue
         rules.append(
@@ -332,8 +350,9 @@ def consistency_rules(contract: SchemaContract) -> list[Rule]:
                 dimension=Dimension.CONSISTENCY,
                 family="unit_inconsistency",
                 severity=Severity.MAJOR,
-                description=f"{field} looks like cents reported as units (~100x typical)",
-                predicate=lambda f=field: F.col(f).isNotNull() & (F.col(f) > F.lit(50_000.0)),
+                description=f"{field} looks like cents reported as units (>{threshold:,.0f})",
+                predicate=lambda f=field, t=threshold: F.col(f).isNotNull()
+                & (F.col(f) > F.lit(t)),
                 field=field,
             )
         )

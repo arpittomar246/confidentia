@@ -1,8 +1,8 @@
 # PROJECT_CONTEXT
 
 Handoff document for **CONFIDENTIA**. Written so development can continue without
-re-deriving anything. Current as of **Stage 7b** (112 tracked files, 7 CI jobs
-green, 168 unit + 12 integration tests).
+re-deriving anything. Current as of **Stage 7c** (119 tracked files, 8 CI jobs
+green, 174 unit + 12 integration tests).
 
 ---
 
@@ -178,11 +178,11 @@ we receive on Tuesday"; Silver answers "what happened on Tuesday".
 │   ├── evaluation/{ground_truth,detections,scoring,runner}.py  665  Stage 7b harness
 │   ├── spark/session.py          272  Session builder, PME wiring, column_keys_for_frame
 │   └── store/{db,migrations,repositories}.py + sql/  612 + 8 migrations
-├── tests/  (conftest + 8 unit + 1 integration)  1,784 lines
-├── scripts/  (10 operational scripts, see §9)
-├── docs/adr/ (7 ADRs)  docs/stage-reports/ (8 reports)
+├── tests/  (conftest + 8 unit + 1 integration)  1,890 lines
+├── scripts/  (13 operational scripts, see §9)
+├── docs/adr/ (7 ADRs)  docs/stage-reports/ (9 reports)
 ├── spikes/pme/                   Stage 1 feasibility spike (still runnable, used by CI)
-├── .github/workflows/ci.yml      8 jobs
+├── .github/workflows/ci.yml      8 jobs (7 before Stage 7c)
 ├── docker-compose.yml            5 profiles (CI-validated, not used locally)
 └── pyproject.toml
 
@@ -207,10 +207,14 @@ refused** — add a new one.
 
 ### `platform` schema
 
+Row counts are from the Stage 7c rebuild, which started from an empty database —
+they are smaller than the 7b figures because they describe **one** clean pipeline
+run rather than an accumulation of development runs.
+
 | Table | Rows now | Purpose |
 |---|---|---|
-| `run` | 138 | One row per execution of any stage. `run_summary` view adds duration/rejection rate |
-| `ingest_batch` | 85 | **Content-addressed idempotency.** PK is SHA-256 over ordered file digests. `seen_count` counts redeliveries. `metadata->>'bronze_promoted_at'` marks Bronze promotion |
+| `run` | 52 | One row per execution of any stage. `run_summary` view adds duration/rejection rate |
+| `ingest_batch` | 19 | **Content-addressed idempotency.** PK is SHA-256 over ordered file digests. `seen_count` counts redeliveries. `metadata->>'bronze_promoted_at'` marks Bronze promotion |
 | `ingest_file` | 33 | Per-file digest + `verified` flag |
 | `watermark` | 100 | Resume points. TEXT value + `watermark_kind` (timestamp/lsn/offset/sequence/digest); `previous_value` allows rollback |
 | `cdc_slot` | 1 | Replication slot state, `last_lsn`, `events_consumed` |
@@ -219,15 +223,15 @@ refused** — add a new one.
 | `key_release_audit` | 90 | Every release decision **including refusals**. Key IDs only, never material |
 | `token_vault` | 0 | Token → **encrypted** original. Unpopulated (see §10) |
 | `detokenisation_audit` | 0 | Every re-identification |
-| `quarantine_record` | 11,124 | Silver failures, **redacted** (sensitive columns stripped) |
+| `quarantine_record` | 5,312 | Silver failures, **redacted** (sensitive columns stripped) |
 | `disclosure_log` | 6 | Per-publish suppression counts |
 | `mart_partition_state` | 54 | Which event dates a mart reflects; `is_dirty` drives restatement |
 | `restatement_log` | 1 | Late-arrival-triggered recomputations |
-| `dq_rule` | 214 | Rule catalogue (dimension, family, field, severity) |
-| `dq_result` | 302 | Per-rule outcome per run (`rows_evaluated` kept, not just rate) |
-| `dq_score` | 8 | Overall + six dimension scores + `promotion_blocked` |
-| `dq_freshness` | 12 | Dataset-level lag vs SLA |
-| `dq_evaluation` | 65 | **Stage 7b.** TP/FP/FN + P/R/F1 per family and per field vs the answer key. `scope` is one of `overall`/`family`/`field`/`unscoreable`. `rule_exists` separates "the rule missed" from "no rule existed". View: `dq_evaluation_latest` |
+| `dq_rule` | 282 | Rule catalogue (dimension, family, field, severity). Up from 214: the four reference contracts added in 7c each derive their own rules |
+| `dq_result` | — | Per-rule outcome per run (`rows_evaluated` kept, not just rate) |
+| `dq_score` | 10 | Overall + six dimension scores + `promotion_blocked` |
+| `dq_freshness` | — | Dataset-level lag vs SLA |
+| `dq_evaluation` | 83 | **Stage 7b.** TP/FP/FN + P/R/F1 per family and per field vs the answer key. `scope` is one of `overall`/`family`/`field`/`unscoreable`. `rule_exists` separates "the rule missed" from "no rule existed". View: `dq_evaluation_latest` |
 | `schema_migration` | 7 | Applied migrations with checksum |
 
 ### `gold` schema (Postgres serving)
@@ -248,12 +252,26 @@ publication `confidentia_patient_pub`. Slot: `confidentia_patient_slot`
 
 ### Lakehouse tables
 
+Counts are from the Stage 7c rebuild. They differ slightly from the 7b figures
+because the defect logic changed, not because the pipeline did.
+
 | Delta table | Rows |
 |---|---|
-| bronze/healthcare/{patient, encounter, claim_line, patient_cdc} | 5,038 / 120,798 / 145,138 / 6,400 |
-| bronze/financial/{account, transaction, chargeback} | 1,097 / 60,501 / 121 |
-| silver/healthcare/{patient, encounter, claim_line, dim_patient} | 5,000 / 59,121 / 141,525 / 5,877 |
-| silver/financial/{account, transaction, chargeback} | 1,074 / 58,899 / 121 |
+| bronze/healthcare/{patient, encounter, claim_line, patient_cdc} | 5,044 / 120,800 / 145,136 / — |
+| bronze/healthcare/{facility, provider, insurance_plan} | 5 / 41 / 8 — **reference, added 7c** |
+| bronze/financial/{account, transaction, chargeback} | 1,097 / 60,409 / 121 |
+| bronze/financial/merchant | 136 — **reference, added 7c** |
+| silver/healthcare/{patient, encounter, claim_line, dim_patient} | — / — / — / — |
+| silver/financial/{account, transaction, chargeback} | — / — / — |
+
+**Reference tables stop at Bronze.** They exist so the referential rules have a
+parent to check against; `is_reference` on the contract keeps them out of Silver,
+and Gold builds its own dimensions from the star schema.
+
+`encounter` is ~2× because the file drop and the REST API each delivered every
+record. That double delivery is deliberate and load-bearing: it is what Silver
+deduplicates, and it is why Bronze uniqueness is evaluated **per source system**
+(§11).
 | gold/healthcare/{dim_date, dim_patient, dim_facility, dim_provider, dim_diagnosis, fact_encounter, fact_claim_line} | — |
 | gold/financial/{dim_date, dim_account, dim_merchant, fact_transaction} | — |
 
@@ -342,9 +360,32 @@ the rules:
   means every key is genuinely duplicated. The rule is right; uniqueness is not
   meaningful at a layer whose contract permits redelivery.
 
-**None of these were fixed in 7b.** Fixing the generator and then reporting the
-improved numbers would mean the harness was tuned until the result looked good.
-The fix list is in §11.
+**None of these were fixed in 7b** — fixing the generator and then reporting the
+improved numbers in the same stage would mean the harness was tuned until the
+result looked good. They were fixed in 7c, separately and afterwards.
+
+### Correction (Stage 7c)
+All eight defects closed, then the pipeline rebuilt from nothing and re-measured.
+Full write-up in `docs/stage-reports/stage-07c.md`.
+
+| Dataset | P (7b → 7c) | R (7b → 7c) | F1 (7b → 7c) |
+|---|---|---|---|
+| healthcare/patient | 1.000 → 1.000 | 0.390 → **0.997** | 0.561 → **0.998** |
+| healthcare/encounter | 0.053 → **0.850** | 0.943 → **1.000** | 0.101 → **0.919** |
+| healthcare/claim_line | 0.814 → 0.818 | 0.798 → **0.961** | 0.806 → **0.884** |
+| financial/account | 1.000 → 1.000 | 0.818 → **0.985** | 0.900 → **0.992** |
+| financial/transaction | 0.998 → 0.998 | 0.712 → **0.959** | 0.831 → **0.978** |
+
+Family/field pairs with no rule at all: 5 → **0**.
+
+**These are not evidence that the rules improved.** Almost nothing changed about
+the rules' method; what changed is that the answer key now describes defects that
+exist and the catalogue covers the columns being corrupted. 7b was measuring the
+measurement apparatus. 7c measures the rules.
+
+The 7b baseline is kept at `~/confidentia-baselines/stage-07b-evaluation.csv`
+(92 rows), exported before the rebuild — **outside the data root**, so a reset does
+not take it.
 
 ---
 
@@ -421,12 +462,22 @@ and any change to them revokes key release.
 | `check_ground_truth_isolation.sh` | No pipeline package reads the answer key |
 | `check_key_material_handling.py` | AST guard: keys never in SparkConf |
 | `check_declared_dependencies.py` | AST guard: every import declared in pyproject |
+| `check_plan_rule_coverage.py` | **7c.** Every injected family/field pair has a rule that *could* catch it. Checks existence, not accuracy — `unit_inconsistency` has a rule and finds a quarter of what is injected, and that passes |
+| `reset_data.sh --yes` | **7c.** Destroys the lake, the raw files and all pipeline tracking state. **Keeps the keystore** — the one thing in the data root that is not regenerable |
+| `rebuild_pipeline.sh` | **7c.** The full pipeline from nothing, in the one order that works (see below) |
 
-### CI — 7 jobs, all green
+`rebuild_pipeline.sh` encodes three orderings that are easy to get wrong by hand:
+`keys approve` after any measured-package edit; the **REST redelivery of
+`encounter`** before Bronze, because that is what creates the double delivery
+Silver deduplicates; and **Bronze quality last**, because the detections table is
+overwritten per run and `evaluate` refuses to score Silver detections against the
+answer key.
+
+### CI — 8 jobs, all green
 
 `lint` (ruff + mypy) · `unit-tests` · `ground-truth-isolation` ·
-`declared-dependencies` · `encryption-guarantee` · `generator-determinism` ·
-`compose-validate`
+`plan-rule-coverage` · `declared-dependencies` · `encryption-guarantee` ·
+`generator-determinism` · `compose-validate`
 
 Integration tests are **not** a CI job — they need PostgreSQL, which the workflow
 does not provision. They run locally via `ci_local.sh` only. Adding a Postgres
@@ -486,6 +537,23 @@ Full rationale in `docs/adr/`. The ones that constrain future work:
     The detections table is overwritten per run, so a Silver run replaces Bronze
     detections in place — which had already happened before Stage 7b ran. Scoring
     those would measure the platform's own cleaning and produce a good number.
+17. **The generator never injects a defect the platform has no rule for** (7c,
+    enforced by `check_plan_rule_coverage.py`). An uncatchable defect is a permanent
+    false negative, and it makes recall measure rule *coverage* rather than rule
+    *quality* — the two are indistinguishable in the number. The check asserts a
+    rule **exists**, never that it succeeds: `unit_inconsistency` has a rule and
+    finds a quarter of what is injected, and that is a legitimate result.
+18. **The corruption functions are deliberately blind to the detector's regexes.**
+    Importing `quality.rules.PATTERNS` into the generator to guarantee a corruption
+    fails them would make recall 1.0 by construction and measure nothing. The
+    generator breaks structure; whether the rules notice is the question being asked.
+19. **A recorded defect must have changed the data** (7c). `_record` drops any
+    corruption whose value is unchanged, comparing nullness properly. This is what
+    stops a no-op corruption entering the answer key, whatever a future corruption
+    function does.
+20. **Bronze uniqueness is per source system.** Bronze is "exactly what arrived",
+    and two collectors legitimately delivering the same records is not a duplicate.
+    Cross-source deduplication is Silver's job and Silver already does it.
 
 ---
 
@@ -513,44 +581,47 @@ Full rationale in `docs/adr/`. The ones that constrain future work:
 ### Quality specifics
 - **177 of 237 rules are cosmetic** (whitespace/encoding, one pair per string
   column). Rule count overstates coverage.
-- **`unit_inconsistency` uses a fixed threshold** (>50,000), not distribution-aware.
-  Measured in 7b: recall **0.085** on transaction, **0.366** on
-  `claim_line/billed_amount`. Precision 1.000 on transaction but **0.093** on
-  claim_line, because clinical amounts legitimately exceed 50,000. A fixed threshold
-  is not just weak, it is **not portable across datasets**.
+- **`unit_inconsistency` is still a fixed threshold**, not distribution-aware. 7c
+  made the threshold per column (`UNIT_THRESHOLDS`) because one value was wrong in
+  two directions at once — a clinical bill legitimately exceeds 50,000 and a retail
+  card transaction does not — but the **method is unchanged**. Current recall
+  **0.104** on transaction, **0.246** on claim_line. This is the family 7a predicted
+  would score worst and it does. A distribution-aware check (median absolute
+  deviation, or reconciling `billed`/`allowed`/`paid`) is the real fix and is future
+  work.
 - **Transaction defect plan omits `whitespace_padding` and `encoding_corruption`**
   (machine-generated, no human text). Recall is reported **per dataset**, never
   pooled, or their absence would look like a detection failure.
 
-### Generator and rule-coverage defects found by Stage 7b
+### Generator and rule-coverage defects — found by 7b, **all fixed in 7c**
 
-Found by the harness, **deliberately not fixed** — fixing them and then reporting
-the improved numbers would mean tuning the harness until the result looked good.
-Fix these before quoting Stage 7b numbers as the platform's accuracy.
+The eight defects the harness exposed are closed and the pipeline was rebuilt from
+nothing to re-measure. Details in `docs/stage-reports/stage-07c.md`; the durable
+protection is `scripts/check_plan_rule_coverage.py`, a CI job asserting that every
+family/field pair the generator injects has a rule that *could* catch it.
 
-1. **`_break_format` is a no-op on all-digit strings.** It strips `@`, `-` and `.`
-   only. Measured against the manifest: 45/45 `postal_code`, 1,342/1,361
-   `procedure_code`, 400/400 `mcc` "corruptions" left the value byte-identical, so
-   the answer key records defects that are not in the data. This accounts for
-   essentially all of `format_violation`'s missing recall. `ip_address` has dots, so
-   it works there and scores 1.000.
-2. **`case_inconsistency` upper-cases**, which does nothing to `currency`
-   (already `USD`). 400 of transaction's 600 injections were no-ops.
-3. **No assertion that a corruption changed the value.** (1) and (2) are the same
-   root cause: the injector should assert `original != corrupted` and drop the
-   manifest row otherwise.
-4. **Missing foreign-key declarations** in `quality/runner.py`'s `relationships`
-   map: `encounter → facility`, `encounter → provider`, `transaction → merchant`,
-   `patient → insurance_plan`. `referential_orphan` scores 1.000 where declared and
-   0.000 where not.
-5. **The generator injects nulls into `patient.first_name`, which the contract
-   declares nullable**, so no completeness rule exists for it. The generator's defect
-   plan and the schema contract disagree; neither is wrong on its own terms.
-6. **`unit_inconsistency` is hard-coded to `billed_amount` and `amount`**, but the
-   generator also injects it into `allowed_amount` and `credit_limit`.
-7. **`duplicate_record` is not meaningful at Bronze.** The double delivery means
-   every `encounter` key is genuinely duplicated, so precision is 0.007. Either
-   exclude it from Bronze scoring or evaluate uniqueness at Silver.
+Do not re-open these without reading that report — several look like plausible
+"improvements" that would actually re-introduce the bug (e.g. making the injector
+consult `quality.rules.PATTERNS`, which would guarantee recall 1.0 by construction).
+
+### What is still imperfect after 7c, and why
+
+All of these are real findings or accepted costs. **None is an artefact.**
+
+- **`format_violation` precision 0.430** on encounter and claim_line. 635 and 1,801
+  whitespace-padded codes also fail the ICD-10 / CPT pattern — real detections of
+  real corruption, counted as false positives because the manifest attributes them
+  to `whitespace_padding`. The documented, accepted cost of strict matching (ADR
+  0012, Decision 1). Recall on that family is **1.000**. This is the largest
+  remaining number and the one most likely to be misread.
+- **`unit_inconsistency` recall 0.104–0.246.** See above; method unchanged by design.
+- **`range_violation` precision 0.958–0.981.** Legitimately extreme clinical amounts
+  and transaction values. Working as intended.
+- **`patient/null_violation` recall 0.990.** One record was nulled *and then*
+  format-corrupted on the same field, and `_break_format` turns a null into `"??"`,
+  so the value is no longer null. An overlapping-defect artefact, correctly recorded
+  twice in the manifest.
+- **`account/unit_inconsistency` 2 of 3.** Sample of three; not a signal.
 
 ### Security caveats
 - **`sim` backend only.** Measurement is self-reported; not a security boundary.
@@ -583,7 +654,8 @@ Fix these before quoting Stage 7b numbers as the platform's accuracy.
 | 5 | Silver: dedupe, tokenise, SCD2 | `ce9f3f4` |
 | 6 | Gold: star schema, C4, restatement | `cc54677` |
 | 7a | Quality: 237 rules, scoring, detections | `a05bb4e` |
-| 7b | Evaluation harness: P/R/F1 per family vs ground truth | *this session* |
+| 7b | Evaluation harness: P/R/F1 per family vs ground truth | `b3fc540` |
+| 7c | Fixed the 8 defects 7b found; reference contracts; rebuilt and re-measured | *this session* |
 
 ### Pending
 
@@ -591,7 +663,6 @@ Fix these before quoting Stage 7b numbers as the platform's accuracy.
 |---|---|---|
 | **8** | **Airflow orchestration, 5 DAGs, quality gate wiring** | **1–2** |
 | 9 | Kafka streaming, Structured Streaming consumers | 1–2 |
-| 7c | Fix the seven generator/coverage defects 7b found (§11) and re-run | 0.5 |
 | 9b | **C3 — verifiable signed lineage** | 1–2 |
 | 10 | FastAPI backend, native OIDC auth, RBAC, ~40 endpoints | 2 |
 | 11 | React/TS dashboard, 9 modules | 3–4 |

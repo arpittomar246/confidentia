@@ -399,16 +399,20 @@ def _account_defect_plan() -> DefectPlan:
         tenant=Tenant.FINANCIAL.value,
         key_field="account_id",
         fields=(
+            # No CASE_INCONSISTENCY: the casing convention is for categorical
+            # columns Silver lower-cases, not for personal names.
             FieldRole("customer_name", (DefectType.NULL_VIOLATION, DefectType.WHITESPACE_PADDING,
-                                        DefectType.CASE_INCONSISTENCY,
                                         DefectType.ENCODING_CORRUPTION)),
             FieldRole("email", (DefectType.NULL_VIOLATION, DefectType.FORMAT_VIOLATION)),
-            FieldRole("phone", (DefectType.FORMAT_VIOLATION, DefectType.NULL_VIOLATION)),
+            # Nullable in the contract, so a missing phone is not a defect.
+            FieldRole("phone", (DefectType.FORMAT_VIOLATION,)),
             FieldRole("status", (DefectType.CASE_INCONSISTENCY,)),
             FieldRole("risk_score", (DefectType.RANGE_VIOLATION, DefectType.TYPE_DRIFT)),
             FieldRole("credit_limit", (DefectType.RANGE_VIOLATION,
                                        DefectType.UNIT_INCONSISTENCY)),
-            FieldRole("home_state", (DefectType.CASE_INCONSISTENCY,)),
+            # A state code is upper-case by convention; upper-casing it was a
+            # no-op the manifest nonetheless recorded as a defect.
+            FieldRole("home_state", (DefectType.WHITESPACE_PADDING,)),
         ),
     )
 
@@ -423,10 +427,20 @@ def _transaction_defect_plan() -> DefectPlan:
             FieldRole("merchant_id", (DefectType.REFERENTIAL_ORPHAN,)),
             FieldRole("amount", (DefectType.RANGE_VIOLATION, DefectType.UNIT_INCONSISTENCY,
                                  DefectType.NULL_VIOLATION, DefectType.TYPE_DRIFT)),
-            FieldRole("currency", (DefectType.CASE_INCONSISTENCY, DefectType.NULL_VIOLATION)),
+            # ISO 4217 codes are upper-case, so upper-casing `currency` changed
+            # nothing at all -- 400 of the 600 case defects Stage 7b recorded on
+            # this dataset were byte-identical to the original.
+            FieldRole("currency", (DefectType.NULL_VIOLATION,)),
             FieldRole("channel", (DefectType.CASE_INCONSISTENCY,)),
             FieldRole("mcc", (DefectType.FORMAT_VIOLATION, DefectType.NULL_VIOLATION)),
-            FieldRole("ip_address", (DefectType.FORMAT_VIOLATION, DefectType.NULL_VIOLATION)),
-            FieldRole("terminal_country", (DefectType.CASE_INCONSISTENCY,)),
+            # Nullable in the contract: card-present transactions have no IP.
+            FieldRole("ip_address", (DefectType.FORMAT_VIOLATION,)),
+            # Same as `currency`: an ISO country code is already upper-case.
+            FieldRole("terminal_country", (DefectType.WHITESPACE_PADDING,)),
         ),
     )
+
+
+def defect_plans() -> list[DefectPlan]:
+    """Every financial defect plan. See healthcare.defect_plans."""
+    return [_account_defect_plan(), _transaction_defect_plan()]

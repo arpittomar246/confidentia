@@ -39,6 +39,7 @@ step "lint / mypy"        mypy
 step "unit tests"         pytest -m unit --cov=confidentia --cov-report=term-missing -q
 step "integration tests"  pytest -m integration -q
 step "ground-truth isolation" bash scripts/check_ground_truth_isolation.sh
+step "plan/rule coverage"     python scripts/check_plan_rule_coverage.py
 step "key material handling"  python scripts/check_key_material_handling.py
 step "declared dependencies"  python scripts/check_declared_dependencies.py
 

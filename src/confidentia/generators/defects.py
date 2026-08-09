@@ -206,18 +206,58 @@ class DefectInjector:
         field: str,
         originals: pd.Series,
         corrupted: pd.Series | str,
+        *,
+        allow_unchanged: bool = False,
     ) -> None:
-        corrupted_values = (
-            corrupted.astype(str).tolist()
+        """Record what was corrupted — but only where something actually changed.
+
+        Stage 7b found this the hard way. ``_break_format`` strips ``@``, ``-`` and
+        ``.``, which does nothing to an all-digit value, and ``case_inconsistency``
+        upper-cases, which does nothing to a value that is already upper-case. The
+        manifest recorded 45/45 ``postal_code``, 400/400 ``mcc`` and 400/600
+        ``currency`` corruptions whose "corrupted" value was byte-identical to the
+        original. Those are not defects. They sat in the answer key as permanent
+        false negatives and made the quality layer look far worse than it is.
+
+        The individual corruption functions are fixed too, but this guard is what
+        makes the class of bug impossible: a defect that did not change the data
+        cannot enter the answer key, whatever a future corruption function does.
+
+        ``allow_unchanged`` exists for ``DUPLICATE_RECORD`` alone, where the
+        recorded value *is* the business key and is identical by construction —
+        the corruption is the extra row, not a changed value.
+        """
+        corrupted_series = (
+            corrupted
             if isinstance(corrupted, pd.Series)
-            else [corrupted] * len(keys)
+            else pd.Series([corrupted] * len(keys), index=originals.index)
         )
-        for key, original, corrupt in zip(
+
+        if allow_unchanged:
+            changed = np.ones(len(keys), dtype=bool)
+        else:
+            original_null = originals.isna().to_numpy()
+            corrupted_null = corrupted_series.isna().to_numpy()
+            same_text = (
+                originals.astype(str).to_numpy() == corrupted_series.astype(str).to_numpy()
+            )
+            # Unchanged means both sides are null, or neither is and the text matches.
+            # Nulling an already-null value is as much a no-op as reformatting a
+            # value that had no separators to strip.
+            changed = ~(
+                (original_null & corrupted_null)
+                | (~original_null & ~corrupted_null & same_text)
+            )
+
+        for key, original, corrupt, did_change in zip(
             keys.astype(str).tolist(),
             originals.astype(str).tolist(),
-            corrupted_values,
+            corrupted_series.astype(str).tolist(),
+            changed.tolist(),
             strict=True,
         ):
+            if not did_change:
+                continue
             records.append(
                 {
                     "dataset": self.plan.dataset,
@@ -253,8 +293,17 @@ class DefectInjector:
         keys = frame.iloc[positions][self.plan.key_field]
         originals = frame.iloc[positions][field]
         frame.iloc[positions, frame.columns.get_loc(field)] = None
+        # A real null Series, not the string "None": the unchanged-guard compares
+        # nullness, so passing a string would hide the case where the value picked
+        # was already null and nothing was actually corrupted.
         self._record(
-            records, chunk_index, keys, DefectType.NULL_VIOLATION, field, originals, "None"
+            records,
+            chunk_index,
+            keys,
+            DefectType.NULL_VIOLATION,
+            field,
+            originals,
+            pd.Series([None] * len(positions), index=originals.index, dtype="object"),
         )
         return frame
 
@@ -455,6 +504,9 @@ class DefectInjector:
             self.plan.key_field,
             keys,
             keys,
+            # The corruption here is the appended row, not a changed value: the
+            # business key is identical by construction, which is the whole point.
+            allow_unchanged=True,
         )
         return pd.concat([frame, duplicates], ignore_index=True)
 
@@ -483,11 +535,37 @@ def _break_format(value: object) -> str:
     by ``NULL_VIOLATION`` can legitimately be selected again here. Overlapping
     defects on one record are realistic and are recorded separately in the
     manifest, so the handler coerces rather than refusing.
+
+    **Stripping separators alone does not break a format.** The original
+    implementation only removed ``@``, ``-`` and ``.``. Stage 7b found two ways
+    that fails, and they need different answers:
+
+    * *No separator to remove.* 45 of 45 ``postal_code``, 400 of 400 ``mcc`` and
+      1,342 of 1,361 ``procedure_code`` values came out byte-identical, so the
+      answer key recorded defects that were never injected.
+    * *Separator removed, value still valid.* ``(555) 123-4567`` becomes
+      ``(555) 1234567``, which the phone pattern still accepts — because it is
+      still a correctly formatted phone number. That is `account/phone` scoring
+      0 of 9 in Stage 7b: not a missed detection, a value that was never broken.
+
+    So both are applied: strip what separators exist, **then** insert one near the
+    front. Stripping is what breaks compound values (an email without its ``@``);
+    inserting is what breaks fixed-width ones (``^\\d{5}$``, ``^\\d{4}$``,
+    ``^MRN\\d{9}$``), failing them on character class and length at once.
+
+    **The corruption is deliberately blind to the detector's regexes.** Importing
+    ``quality.rules.PATTERNS`` here and asserting the result fails them would
+    guarantee recall 1.0 by construction and measure nothing. The generator breaks
+    structure; whether the rules notice is the question being asked.
     """
     if value is None or value is pd.NA or (isinstance(value, float) and pd.isna(value)):
         return "??"
+
     text = str(value).replace("@", "_at_").replace("-", "").replace(".", "")
-    return text[:24] or "??"
+    # A one-character value has no structure left to break, so make it obviously
+    # malformed rather than returning something a pattern might still accept.
+    broken = f"{text[:2]}-{text[2:]}" if len(text) >= 2 else f"{text}-?"
+    return broken[:24]
 
 
 def _empty_manifest() -> pd.DataFrame:

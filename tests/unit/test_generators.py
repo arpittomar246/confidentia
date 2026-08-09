@@ -296,3 +296,94 @@ def test_start_date_anchors_output() -> None:
     frame = collect(hc.generate_encounters(config, scale))
     assert frame["admit_ts"].min() >= pd.Timestamp("2026-03-01", tz="UTC")
     assert frame["admit_ts"].max() < pd.Timestamp("2026-03-12", tz="UTC")
+
+
+class TestDefectPlansAgreeWithContracts:
+    """The generator must not inject defects the platform cannot define.
+
+    Stage 7b found 82 injected 'null violations' on patient.first_name, a column
+    the contract declared nullable. Since completeness rules are *derived from the
+    contract*, no rule for it could ever exist, so those 82 sat in the answer key
+    as permanent false negatives and dragged patient recall to 0.39.
+
+    Both directions of the disagreement are a bug, and which side to fix is a
+    judgement per column: first_name became NOT NULL because a patient master
+    genuinely requires one (last_name already was), while email, phone, ssn and
+    ip_address are legitimately optional and lost their NULL_VIOLATION role.
+    """
+
+    def plans(self):
+        return [*hc.defect_plans(), *fin.defect_plans()]
+
+    def test_every_targeted_field_exists_in_the_contract(self) -> None:
+        from confidentia.catalog.contracts import get_contract
+
+        for plan in self.plans():
+            contract = get_contract(plan.tenant, plan.dataset)
+            for role in plan.fields:
+                assert contract.column(role.name) is not None, (
+                    f"{plan.dataset}.{role.name} is corrupted by the generator but "
+                    "is not in the contract"
+                )
+
+    def test_null_violations_only_target_required_columns(self) -> None:
+        from confidentia.catalog.contracts import get_contract
+
+        for plan in self.plans():
+            contract = get_contract(plan.tenant, plan.dataset)
+            for name in plan.fields_for(DefectType.NULL_VIOLATION):
+                spec = contract.column(name)
+                assert spec is not None and not spec.nullable, (
+                    f"{plan.dataset}.{name} is nullable in the contract, so a null "
+                    "there is permitted data, not a defect. No derived completeness "
+                    "rule can exist for it, making this a permanent false negative."
+                )
+
+
+class TestCorruptionsActuallyCorrupt:
+    """A recorded defect whose value did not change is a permanent false negative.
+
+    This is what made format_violation look broken in Stage 7b: _break_format
+    only stripped separators, so all-digit fields came out byte-identical.
+    """
+
+    def test_break_format_changes_every_shape_of_value(self) -> None:
+        from confidentia.generators.defects import _break_format
+
+        for value in ("90049", "7011", "99213", "MRN123456789", "USD",
+                      "jane@example.com", "(555) 123-4567", "E11.9", "X"):
+            assert _break_format(value) != value, f"{value!r} survived corruption"
+
+    def test_break_format_tolerates_nulls(self) -> None:
+        from confidentia.generators.defects import _break_format
+
+        assert _break_format(None) == "??"
+        assert _break_format(float("nan")) == "??"
+
+    def test_manifest_excludes_corruptions_that_changed_nothing(self) -> None:
+        # currency is already upper-case, so upper-casing it is a no-op. The
+        # manifest must not claim a defect was injected.
+        plan = DefectPlan(
+            dataset="t", tenant="financial", key_field="k",
+            fields=(FieldRole("currency", (DefectType.CASE_INCONSISTENCY,)),),
+        )
+        injector = injector_for(plan, GeneratorConfig(rows=100, defect_rate=1.0))
+        frame = pd.DataFrame({"k": [f"K{i}" for i in range(50)], "currency": ["USD"] * 50})
+        _, manifest = injector.inject(frame, np.random.default_rng(0), 0)
+        # duplicate_record is applied regardless of the field roles, so the
+        # manifest is not empty -- but nothing may claim currency was corrupted.
+        assert manifest[manifest.defect_type == DefectType.CASE_INCONSISTENCY.value].empty
+
+    def test_duplicate_record_is_still_recorded(self) -> None:
+        # The one family whose recorded value is identical by construction: the
+        # corruption is the appended row, not a changed value.
+        plan = DefectPlan(
+            dataset="t", tenant="financial", key_field="k",
+            fields=(FieldRole("label", (DefectType.WHITESPACE_PADDING,)),),
+        )
+        injector = injector_for(plan, GeneratorConfig(rows=100, defect_rate=1.0))
+        frame = pd.DataFrame({"k": [f"K{i}" for i in range(50)], "label": ["a"] * 50})
+        out, manifest = injector.inject(frame, np.random.default_rng(0), 0)
+        dupes = manifest[manifest.defect_type == DefectType.DUPLICATE_RECORD.value]
+        assert not dupes.empty
+        assert len(out) > len(frame)

@@ -60,6 +60,13 @@ class SchemaContract:
     # inside the data makes backfill rewrite history.
     partition_columns: tuple[str, ...] = ("ingest_date",)
     description: str = ""
+    # Small, slowly-changing lookup tables: facilities, providers, plans,
+    # merchants. They are promoted to Bronze so the referential rules have a
+    # parent to check against, but they are not conformed into Silver — Gold
+    # builds its own dimensions from the star schema, and running dedupe,
+    # tokenisation and SCD2 over a 5-row facility table would add machinery
+    # without adding meaning.
+    is_reference: bool = False
 
     def column(self, name: str) -> ColumnSpec | None:
         return next((c for c in self.columns if c.name == name), None)
@@ -173,7 +180,11 @@ PATIENT = SchemaContract(
     columns=(
         ColumnSpec("patient_id", "string", False, Sensitivity.INTERNAL, "Surrogate source id"),
         ColumnSpec("mrn", "string", False, Sensitivity.PHI, "Medical record number", tokenise=True),
-        ColumnSpec("first_name", "string", True, Sensitivity.PII, tokenise=True),
+        # Required, like last_name. It was nullable until Stage 7b, which is how
+        # the generator came to inject 82 "null violations" into a column the
+        # contract permitted to be null -- an unfindable permanent false negative,
+        # because the contract is what creates the completeness rule.
+        ColumnSpec("first_name", "string", False, Sensitivity.PII, tokenise=True),
         ColumnSpec("last_name", "string", False, Sensitivity.PII, tokenise=True),
         ColumnSpec("date_of_birth", "date", True, Sensitivity.PHI),
         ColumnSpec("sex", "string", True, Sensitivity.PHI),
@@ -370,10 +381,111 @@ CHARGEBACK = SchemaContract(
     ),
 )
 
+# ----------------------------------------------------------- reference tables
+#
+# Added in Stage 7c. The generator has always produced these, but without
+# contracts they were never promoted past the landing zone — so every foreign key
+# pointing at them was undeclarable, and `referential_orphan` scored 0.000 on
+# `encounter.provider_id`, `encounter.facility_id`, `patient.plan_id` and
+# `transaction.merchant_id` for want of a parent to check against.
+#
+# `IDENTIFIER_MARKERS` forces anything with "name" in it to at least PII. For
+# `provider_name` that is exactly right — these are people. For `facility_name`
+# and `merchant_name` it over-classifies an organisation name, which costs a key
+# lookup and protects nothing that needed protecting. The guard is deliberately
+# blunt and erring this way is the safe direction.
+
+FACILITY = SchemaContract(
+    dataset="facility",
+    tenant=Tenant.HEALTHCARE,
+    version=1,
+    description="Care sites. Reference table; parent of encounter.facility_id.",
+    business_key=("facility_id",),
+    is_reference=True,
+    columns=(
+        ColumnSpec("facility_id", "string", False, Sensitivity.INTERNAL),
+        ColumnSpec("facility_name", "string", False, Sensitivity.PII),
+        ColumnSpec("facility_type", "string", True, Sensitivity.PUBLIC),
+        ColumnSpec("city", "string", True, Sensitivity.INTERNAL),
+        ColumnSpec("state", "string", True, Sensitivity.PUBLIC),
+        ColumnSpec("postal_code", "string", True, Sensitivity.PII),
+        ColumnSpec("latitude", "double", True, Sensitivity.INTERNAL),
+        ColumnSpec("longitude", "double", True, Sensitivity.INTERNAL),
+        ColumnSpec("bed_count", "bigint", True, Sensitivity.PUBLIC),
+        ColumnSpec("is_active", "boolean", True, Sensitivity.PUBLIC),
+        *_INGEST_ENVELOPE,
+    ),
+)
+
+PROVIDER = SchemaContract(
+    dataset="provider",
+    tenant=Tenant.HEALTHCARE,
+    version=1,
+    description="Clinicians. Reference table; parent of encounter.provider_id.",
+    business_key=("provider_id",),
+    is_reference=True,
+    columns=(
+        ColumnSpec("provider_id", "string", False, Sensitivity.INTERNAL),
+        # A National Provider Identifier is a direct identifier for a real person.
+        ColumnSpec("npi", "string", False, Sensitivity.PII),
+        ColumnSpec("provider_name", "string", False, Sensitivity.PII),
+        ColumnSpec("specialty", "string", True, Sensitivity.PUBLIC),
+        ColumnSpec("facility_id", "string", True, Sensitivity.INTERNAL),
+        ColumnSpec("is_accepting_patients", "boolean", True, Sensitivity.PUBLIC),
+        *_INGEST_ENVELOPE,
+    ),
+)
+
+INSURANCE_PLAN = SchemaContract(
+    dataset="insurance_plan",
+    tenant=Tenant.HEALTHCARE,
+    version=1,
+    description="Payer plans. Reference table; parent of patient.plan_id.",
+    business_key=("plan_id",),
+    is_reference=True,
+    columns=(
+        ColumnSpec("plan_id", "string", False, Sensitivity.INTERNAL),
+        # An insurer is an organisation, but the marker guard reads "name".
+        ColumnSpec("payer_name", "string", False, Sensitivity.PII),
+        ColumnSpec("plan_type", "string", True, Sensitivity.PUBLIC),
+        ColumnSpec("annual_deductible", "bigint", True, Sensitivity.PUBLIC),
+        ColumnSpec("coinsurance_rate", "double", True, Sensitivity.PUBLIC),
+        *_INGEST_ENVELOPE,
+    ),
+)
+
+MERCHANT = SchemaContract(
+    dataset="merchant",
+    tenant=Tenant.FINANCIAL,
+    version=1,
+    description="Acceptors. Reference table; parent of transaction.merchant_id.",
+    business_key=("merchant_id",),
+    is_reference=True,
+    columns=(
+        ColumnSpec("merchant_id", "string", False, Sensitivity.INTERNAL),
+        ColumnSpec("merchant_name", "string", False, Sensitivity.PII),
+        ColumnSpec("mcc", "string", True, Sensitivity.PUBLIC),
+        ColumnSpec("mcc_category", "string", True, Sensitivity.PUBLIC),
+        ColumnSpec("country", "string", True, Sensitivity.PUBLIC),
+        ColumnSpec("city", "string", True, Sensitivity.INTERNAL),
+        ColumnSpec("state", "string", True, Sensitivity.PUBLIC),
+        ColumnSpec("risk_tier", "string", True, Sensitivity.INTERNAL),
+        ColumnSpec("onboarded_at", "timestamp", True, Sensitivity.INTERNAL),
+        *_INGEST_ENVELOPE,
+    ),
+)
+
 CONTRACTS: dict[tuple[str, str], SchemaContract] = {
     (c.tenant.value, c.dataset): c
-    for c in (PATIENT, PATIENT_CDC, ENCOUNTER, CLAIM_LINE, ACCOUNT, TRANSACTION, CHARGEBACK)
+    for c in (
+        PATIENT, PATIENT_CDC, ENCOUNTER, CLAIM_LINE, ACCOUNT, TRANSACTION, CHARGEBACK,
+        FACILITY, PROVIDER, INSURANCE_PLAN, MERCHANT,
+    )
 }
+
+
+def all_reference_contracts() -> list[SchemaContract]:
+    return [c for c in CONTRACTS.values() if c.is_reference]
 
 
 @lru_cache(maxsize=64)
