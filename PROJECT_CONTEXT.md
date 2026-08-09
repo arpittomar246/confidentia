@@ -1,8 +1,8 @@
 # PROJECT_CONTEXT
 
 Handoff document for **CONFIDENTIA**. Written so development can continue without
-re-deriving anything. Current as of commit `74bc06e` (17 commits, 106 tracked
-files, 7 CI jobs green).
+re-deriving anything. Current as of **Stage 7b** (112 tracked files, 7 CI jobs
+green, 168 unit + 12 integration tests).
 
 ---
 
@@ -174,12 +174,13 @@ we receive on Tuesday"; Silver answers "what happened on Tuesday".
 │   │   ├── bronze/writer.py      319
 │   │   ├── silver/{transforms,scd2,writer}.py  839
 │   │   └── gold/{disclosure,star,marts,writer}.py  1,338
-│   ├── quality/{rules,scoring,runner}.py  1,027
+│   ├── quality/{rules,scoring,runner}.py  1,032
+│   ├── evaluation/{ground_truth,detections,scoring,runner}.py  665  Stage 7b harness
 │   ├── spark/session.py          272  Session builder, PME wiring, column_keys_for_frame
-│   └── store/{db,migrations,repositories}.py + sql/  608 + 7 migrations
-├── tests/  (conftest + 7 unit + 1 integration)  1,510 lines
+│   └── store/{db,migrations,repositories}.py + sql/  612 + 8 migrations
+├── tests/  (conftest + 8 unit + 1 integration)  1,784 lines
 ├── scripts/  (10 operational scripts, see §9)
-├── docs/adr/ (6 ADRs)  docs/stage-reports/ (7 reports)
+├── docs/adr/ (7 ADRs)  docs/stage-reports/ (8 reports)
 ├── spikes/pme/                   Stage 1 feasibility spike (still runnable, used by CI)
 ├── .github/workflows/ci.yml      8 jobs
 ├── docker-compose.yml            5 profiles (CI-validated, not used locally)
@@ -187,6 +188,12 @@ we receive on Tuesday"; Silver answers "what happened on Tuesday".
 
 EMPTY (not yet built): backend/ frontend/ orchestration/ monitoring/ infrastructure/
                        src/confidentia/{streaming,benchmarks,tee,lineage}/
+
+`evaluation/` is NOT a pipeline package. It is the only place besides
+generators/writers.py allowed near the ground-truth answer key, and it reaches it
+only through `iter_defects`. Do not add it to the pipeline list in
+check_ground_truth_isolation.sh, and do not name the manifest file in it — the
+guard greps the filename across all of src/confidentia.
 ```
 
 ---
@@ -220,7 +227,8 @@ refused** — add a new one.
 | `dq_result` | 302 | Per-rule outcome per run (`rows_evaluated` kept, not just rate) |
 | `dq_score` | 8 | Overall + six dimension scores + `promotion_blocked` |
 | `dq_freshness` | 12 | Dataset-level lag vs SLA |
-| `schema_migration` | 6 | Applied migrations with checksum |
+| `dq_evaluation` | 65 | **Stage 7b.** TP/FP/FN + P/R/F1 per family and per field vs the answer key. `scope` is one of `overall`/`family`/`field`/`unscoreable`. `rule_exists` separates "the rule missed" from "no rule existed". View: `dq_evaluation_latest` |
+| `schema_migration` | 7 | Applied migrations with checksum |
 
 ### `gold` schema (Postgres serving)
 
@@ -309,6 +317,35 @@ chargebacks.
 237 rules across 6 dimensions, mostly **derived from the contract**. Field-level
 detections. Bronze and Silver scored separately.
 
+### Evaluation (Stage 7b)
+The quality layer scored against the Stage 2 answer key on **Bronze**, strict
+`(record_key, field, family)` matching, per family and per field. Overall recall
+0.39–0.94 by dataset; see `docs/stage-reports/stage-07b.md` for the full table and
+[ADR 0012](docs/adr/0012-evaluation-matching-criterion.md) for the criterion.
+
+The harness found more about the *generator* and the *rule catalogue* than about
+the rules:
+
+- **`_break_format` is a no-op on all-digit fields.** 45/45 `postal_code`,
+  1,342/1,361 `procedure_code`, 400/400 `mcc` corruptions left the value
+  byte-identical. `format_violation` recall is depressed by defects that were never
+  actually injected, not by rules that missed them.
+- **`case_inconsistency` upper-cases**, so 400 injections into `currency` (already
+  `USD`) changed nothing.
+- **Five family/field pairs have no rule at all** — including nulls injected into
+  `patient.first_name`, which the *contract declares nullable*. Recall 0.0 there is
+  a coverage gap, not a miss.
+- **`unit_inconsistency` recall 0.085** on transaction, as predicted in 7a. Its
+  precision is 1.000 on transaction but 0.093 on claim_line: a fixed threshold is
+  not portable across datasets.
+- **`encounter/duplicate_record` precision 0.007** — the Bronze double delivery
+  means every key is genuinely duplicated. The rule is right; uniqueness is not
+  meaningful at a layer whose contract permits redelivery.
+
+**None of these were fixed in 7b.** Fixing the generator and then reporting the
+improved numbers would mean the harness was tuned until the result looked good.
+The fix list is in §11.
+
 ---
 
 ## 9. Commands
@@ -325,6 +362,7 @@ bronze write|verify
 silver write|dimension|quarantine
 gold build|disclosure|restatements
 quality run|rules|scores|failures
+evaluate quality|report               Stage 7b: P/R/F1 vs the ground-truth answer key
 runs
 ```
 
@@ -356,7 +394,14 @@ python -m confidentia.cli gold build healthcare
 python -m confidentia.cli gold build financial
 python -m confidentia.cli quality run healthcare --layer bronze
 python -m confidentia.cli quality run financial  --layer bronze
+python -m confidentia.cli evaluate quality healthcare
+python -m confidentia.cli evaluate quality financial
 ```
+
+**Bronze quality must be the last quality run before `evaluate`.** The detections
+table is overwritten per run, so a Silver run replaces the Bronze detections in
+place. `evaluate` refuses rather than scoring the wrong layer, but the fix is
+always to re-run `quality run <tenant> --layer bronze`.
 
 **`keys approve` must be the last step before running anything** after editing
 `crypto/`, `pipelines/`, `quality/` or `lineage/` — those are the measured packages,
@@ -425,9 +470,22 @@ Full rationale in `docs/adr/`. The ones that constrain future work:
     this); Silver = what we publish (looks better because Silver cleaned it).
 12. **Severity-weighted scoring** (critical 10, major 3, minor 1) so the score cannot
     be improved by adding cosmetic checks.
-13. **Ground-truth isolation.** No pipeline package may read `_defects.parquet`.
-    Stage 7b's evaluation harness must therefore live **outside** `quality/` —
-    put it in `src/confidentia/benchmarks/` or a new `evaluation/` package.
+13. **Ground-truth isolation.** No pipeline package may read the answer key. The
+    evaluation harness therefore lives in `src/confidentia/evaluation/`, outside
+    `quality/`, and reaches the manifest only through `iter_defects`. The guard also
+    greps the manifest's *filename* across all of `src/confidentia`, so do not name
+    it even in a docstring there.
+14. **Evaluation matches strictly on `(record_key, field, family)`** (ADR 0012).
+    Record-only matching would credit a rule that fired on the wrong column and push
+    precision towards 1.0 for reasons unrelated to correctness. The cost — a
+    detection that is right about the record and wrong about the reason counts as a
+    false positive — is accepted and reported, not scored away.
+15. **Undefined metrics are stored as NULL, never 0.0.** A family with no injected
+    defects has no recall; writing zero would assert a failure that did not happen.
+16. **Detections carry their `layer`, and the evaluator refuses the wrong one.**
+    The detections table is overwritten per run, so a Silver run replaces Bronze
+    detections in place — which had already happened before Stage 7b ran. Scoring
+    those would measure the platform's own cleaning and produce a good number.
 
 ---
 
@@ -441,7 +499,10 @@ Full rationale in `docs/adr/`. The ones that constrain future work:
   every version starts when the mutation replay ran. Bi-temporal is future work.
 - **Token vault is implemented but unpopulated** — `vault_store`/`detokenise` work
   and are audited, but no pipeline writes to it. Tokenisation is one-way in practice.
-- **Detections are overwritten per run** — no history, so no DQ trend analysis.
+- **Detections are overwritten per run** — no history, so no DQ trend analysis. They
+  now carry a `layer` column, so `evaluate` refuses the wrong layer instead of
+  silently scoring Silver detections against the answer key. Adding a run key on top
+  of that would give trends and is small.
 - **`promotion_blocked` is computed but nothing consumes it.** Wire into Stage 8.
 - **Integration tests do not run in CI** — they need PostgreSQL and the workflow
   provisions none. They pass locally. Adding a `services: postgres` block to the
@@ -453,11 +514,43 @@ Full rationale in `docs/adr/`. The ones that constrain future work:
 - **177 of 237 rules are cosmetic** (whitespace/encoding, one pair per string
   column). Rule count overstates coverage.
 - **`unit_inconsistency` uses a fixed threshold** (>50,000), not distribution-aware.
-  It caught only 17 of an expected ~190. Deliberate — it is the family expected to
-  score worst, and 7b will quantify the miss.
+  Measured in 7b: recall **0.085** on transaction, **0.366** on
+  `claim_line/billed_amount`. Precision 1.000 on transaction but **0.093** on
+  claim_line, because clinical amounts legitimately exceed 50,000. A fixed threshold
+  is not just weak, it is **not portable across datasets**.
 - **Transaction defect plan omits `whitespace_padding` and `encoding_corruption`**
-  (machine-generated, no human text). 7b must report recall **per dataset**, not
-  pooled, or their absence looks like a detection failure.
+  (machine-generated, no human text). Recall is reported **per dataset**, never
+  pooled, or their absence would look like a detection failure.
+
+### Generator and rule-coverage defects found by Stage 7b
+
+Found by the harness, **deliberately not fixed** — fixing them and then reporting
+the improved numbers would mean tuning the harness until the result looked good.
+Fix these before quoting Stage 7b numbers as the platform's accuracy.
+
+1. **`_break_format` is a no-op on all-digit strings.** It strips `@`, `-` and `.`
+   only. Measured against the manifest: 45/45 `postal_code`, 1,342/1,361
+   `procedure_code`, 400/400 `mcc` "corruptions" left the value byte-identical, so
+   the answer key records defects that are not in the data. This accounts for
+   essentially all of `format_violation`'s missing recall. `ip_address` has dots, so
+   it works there and scores 1.000.
+2. **`case_inconsistency` upper-cases**, which does nothing to `currency`
+   (already `USD`). 400 of transaction's 600 injections were no-ops.
+3. **No assertion that a corruption changed the value.** (1) and (2) are the same
+   root cause: the injector should assert `original != corrupted` and drop the
+   manifest row otherwise.
+4. **Missing foreign-key declarations** in `quality/runner.py`'s `relationships`
+   map: `encounter → facility`, `encounter → provider`, `transaction → merchant`,
+   `patient → insurance_plan`. `referential_orphan` scores 1.000 where declared and
+   0.000 where not.
+5. **The generator injects nulls into `patient.first_name`, which the contract
+   declares nullable**, so no completeness rule exists for it. The generator's defect
+   plan and the schema contract disagree; neither is wrong on its own terms.
+6. **`unit_inconsistency` is hard-coded to `billed_amount` and `amount`**, but the
+   generator also injects it into `allowed_amount` and `credit_limit`.
+7. **`duplicate_record` is not meaningful at Bronze.** The double delivery means
+   every `encounter` key is genuinely duplicated, so precision is 0.007. Either
+   exclude it from Bronze scoring or evaluate uniqueness at Silver.
 
 ### Security caveats
 - **`sim` backend only.** Measurement is self-reported; not a security boundary.
@@ -490,14 +583,15 @@ Full rationale in `docs/adr/`. The ones that constrain future work:
 | 5 | Silver: dedupe, tokenise, SCD2 | `ce9f3f4` |
 | 6 | Gold: star schema, C4, restatement | `cc54677` |
 | 7a | Quality: 237 rules, scoring, detections | `a05bb4e` |
+| 7b | Evaluation harness: P/R/F1 per family vs ground truth | *this session* |
 
 ### Pending
 
 | Stage | Deliverable | Est. sessions |
 |---|---|---|
-| **7b** | **Evaluation harness — precision/recall/F1 per family vs ground truth** | **1** |
-| 8 | Airflow orchestration, 5 DAGs, quality gate wiring | 1–2 |
+| **8** | **Airflow orchestration, 5 DAGs, quality gate wiring** | **1–2** |
 | 9 | Kafka streaming, Structured Streaming consumers | 1–2 |
+| 7c | Fix the seven generator/coverage defects 7b found (§11) and re-run | 0.5 |
 | 9b | **C3 — verifiable signed lineage** | 1–2 |
 | 10 | FastAPI backend, native OIDC auth, RBAC, ~40 endpoints | 2 |
 | 11 | React/TS dashboard, 9 modules | 3–4 |
@@ -511,75 +605,82 @@ Full rationale in `docs/adr/`. The ones that constrain future work:
 
 ---
 
-## 13. Exact next steps — Stage 7b
+## 13. Exact next steps — Stage 8
 
-**Goal:** score the Stage 7a detections against the Stage 2 ground-truth manifest,
-producing precision, recall and F1 **per defect family**.
+**Goal:** orchestrate the pipeline as Airflow DAGs and make the quality gate
+actually gate something. `promotion_blocked` has been computed since Stage 7a and
+nothing consumes it.
+
+### Before starting, decide one thing
+
+**Where Airflow runs.** ADR 0001 rules out Docker locally, and the host has 7.4 GB
+RAM with WSL capped at 4 GB. Airflow's scheduler plus webserver plus a Spark driver
+will not fit comfortably alongside PostgreSQL. Two viable options:
+
+- `LocalExecutor` against the existing PostgreSQL instance, webserver started only
+  when a screenshot is needed. Cheapest, and the DAGs are the deliverable, not the UI.
+- `airflow dags test` only — no scheduler at all, DAGs exercised as code. Honest,
+  but weaker as a demo.
+
+Pick one and record it in an ADR. Do not install Airflow before deciding; a failed
+install with a half-initialised metadata DB in the platform database is a mess.
 
 ### Where the code goes
 
-**`src/confidentia/evaluation/`** — a new package, *not* `quality/`.
-`check_ground_truth_isolation.sh` forbids any pipeline package from referencing
-`_defects.parquet`, `iter_defects` or `latent_fraud`. Add `evaluation` to neither the
-pipeline list nor the guard's forbidden set; it is evaluation tooling, like
-`cli.py profile`.
+`orchestration/dags/` and `orchestration/plugins/` already exist and are empty.
+Airflow's metadata database must **not** be the `confidentia` database — put it in
+its own, or the `platform` schema and Airflow's tables end up in one backup unit and
+`db migrate`'s checksum tracking gets confusing.
 
-### Inputs
+DAGs should call the CLI or the Python entry points, **not** reimplement pipeline
+logic. Every stage already has a callable: `run_quality`, `evaluate_dataset`,
+`write_bronze`, and so on. A DAG that duplicates transformation logic will drift.
 
-| Side | Location | Key columns |
+### The five DAGs
+
+| DAG | Trigger | Shape |
 |---|---|---|
-| Detections | `lake/quality/<tenant>/<dataset>/detections` (Delta) | `record_key`, `family`, `field`, `rule_id`, `severity` |
-| Ground truth | `<data_root>/raw/<tenant>/<dataset>/_defects.parquet` | `record_key`, `defect_type`, `field`, `severity` |
+| `ingest` | schedule | file → REST → CDC per tenant |
+| `bronze_silver` | after ingest | bronze write → quality run (bronze) → **gate** → silver write |
+| `gold` | after silver | silver dimension → gold build → disclosure |
+| `quality` | schedule | quality run + `evaluate quality` |
+| `restatement` | sensor on `mart_partition_state.is_dirty` | rebuild dirty marts |
 
-Both use the **same family vocabulary** by design — no translation layer.
+### The gate is the point
 
-### The matching criterion (decide and document)
+`platform.dq_score.promotion_blocked` is already written per run. Stage 8 must make
+a blocked score **stop the DAG** before Silver, and record why. Two properties worth
+getting right:
 
-Use the **strict** criterion: a true positive requires
-`(record_key, field, family)` to match. Loose (record-only) matching would inflate
-precision and mean little. Expect some families to score badly — that is the result.
+- The gate must fail the task, not skip it. A skipped task looks like success in
+  the Airflow UI and the next scheduled run proceeds as though nothing happened.
+- A blocked promotion must be visible in `platform.run` with a reason, so
+  `confidentia runs` explains the stall without opening Airflow.
 
-- **TP** — detection matches a ground-truth defect on all three
-- **FP** — detection with no matching defect
-- **FN** — defect with no matching detection
+### Watch out for
 
-### Must score against **Bronze**, not Silver
-
-Silver has already quarantined the defects, so recall there measures the platform's
-own cleaning. `quality run <tenant> --layer bronze` first.
-
-### Known complications
-
-1. **Duplicate defects append rows.** `duplicate_record` entries in the manifest
-   refer to appended near-duplicates; the detection side flags *both* copies. Decide
-   whether that is 1 TP or 2 and state it.
-2. **Overlapping defects.** One record can carry several defects on the same field
-   (e.g. nulled then format-corrupted). Join on all three keys, not two.
-3. **`latent_fraud` is a label, not a defect** — exclude it from DQ scoring; it
-   belongs to the analytics evaluation.
-4. **Bronze contains the double delivery**, so `encounter` record keys appear twice.
-   Deduplicate the detection side on `(record_key, field, family)` before scoring, or
-   recall will exceed 1.0.
-5. **Platform-only families** (`future_event`, `late_arrival`) have no ground truth —
-   report them separately as "detected, unscoreable".
+1. **`keys approve` is a deployment step.** Any DAG that runs after a code change
+   fails key release until the measurement is re-approved. Either add an approval
+   task guarded on measurement drift, or document it as a manual release step. Do
+   not weaken the attestation check to make Airflow convenient.
+2. **One Spark session per tenant.** `session_for_tenant` scopes PME configuration
+   to one tenant; two tenants in one task risks writing one tenant's data under the
+   other's key. Keep tenants in separate tasks.
+3. **Bronze quality must run before `evaluate`**, and nothing may run Silver quality
+   in between — the detections table is overwritten per run. The evaluator refuses
+   rather than scoring the wrong layer, so a mis-ordered DAG fails loudly, but the
+   ordering is still a real constraint.
+4. **Memory.** `local[2]` with a 2 GB driver is already most of the WSL budget. Do
+   not run two Spark tasks concurrently; set `max_active_tasks=1` on the Spark DAGs.
 
 ### Deliverables
 
-- `evaluation/ground_truth.py` — load and normalise the answer key
-- `evaluation/scoring.py` — TP/FP/FN, precision, recall, F1 per family per dataset
-- `store/sql/008_evaluation.sql` — `platform.dq_evaluation` table
-- `cli.py`: `evaluate quality <tenant> [dataset]`
-- `tests/unit/test_evaluation.py` — matching logic with synthetic fixtures
-- `docs/stage-reports/stage-07b.md` — the headline table
-- ADR if the matching criterion needs defending at length
-
-### Expected shape of the result
-
-`null_violation` and `referential_orphan` should score near 1.0 on both metrics.
-`unit_inconsistency` should have **poor recall** (~10%) — a fixed threshold cannot
-catch cents-as-dollars when the value stays plausible. `whitespace_padding` and
-`encoding_corruption` should be near-perfect where they were injected and absent for
-`transaction`. **The low numbers are the interesting ones and must not be hidden.**
+- `orchestration/dags/*.py` — five DAGs
+- `orchestration/plugins/` — the quality-gate operator or sensor
+- ADR for the Airflow deployment decision above
+- `store/sql/009_*.sql` if the gate needs its own audit table
+- `docs/stage-reports/stage-08.md`
+- CI: DAG import test (`python -c "import dagbag"`) is cheap and catches most breaks
 
 ---
 

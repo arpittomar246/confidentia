@@ -752,6 +752,109 @@ def quality_failures(
         )
 
 
+evaluate_app = typer.Typer(
+    help="Score the platform against the ground-truth answer key.", no_args_is_help=True
+)
+app.add_typer(evaluate_app, name="evaluate")
+
+
+def _echo_evaluation(result: object) -> None:
+    from confidentia.evaluation.scoring import EvaluationResult
+
+    assert isinstance(result, EvaluationResult)
+    typer.echo(f"  {result.summary()}")
+    # Worst recall first: the families the platform misses are the finding, and a
+    # table sorted by name buries them among the ones that score 1.0.
+    for score in sorted(
+        result.families, key=lambda s: (s.recall if s.recall is not None else 2.0)
+    ):
+        gap = "" if score.rule_exists is not False else "   (no rule registered)"
+        typer.echo(f"    {score.summary()}{gap}")
+    for score in result.unscoreable:
+        typer.echo(
+            f"    {score.family:44s} {score.detected_claims:>7,} detected, "
+            "unscoreable (never injected)"
+        )
+
+
+@evaluate_app.command("quality")
+def evaluate_quality(
+    tenant: Annotated[str, typer.Argument(help="healthcare | financial")],
+    dataset: Annotated[str | None, typer.Argument(help="Dataset, or omit for all.")] = None,
+    layer: Annotated[
+        str, typer.Option(help="Layer whose detections to score. Bronze is the only "
+                               "one that measures the source rather than our cleaning.")
+    ] = "bronze",
+    fields: Annotated[
+        bool, typer.Option("--fields", help="Break each family down by column.")
+    ] = False,
+) -> None:
+    """Precision, recall and F1 per defect family against the Stage 2 manifest."""
+    from confidentia.evaluation.detections import DetectionsMissingError, WrongLayerError
+    from confidentia.evaluation.ground_truth import GroundTruthMissingError
+    from confidentia.evaluation.runner import evaluatable_datasets, evaluate_dataset
+
+    datasets = [dataset] if dataset else evaluatable_datasets(tenant)
+    if not datasets:
+        typer.echo(f"no dataset with a ground-truth manifest for {tenant}")
+        raise typer.Exit(code=1)
+
+    for name in datasets:
+        try:
+            result = evaluate_dataset(tenant, name, layer=layer)
+        except (GroundTruthMissingError, DetectionsMissingError) as exc:
+            typer.echo(f"  {tenant}/{name}: skipped ({exc})")
+            continue
+        except WrongLayerError as exc:
+            typer.echo(f"  {tenant}/{name}: REFUSED  {exc}")
+            continue
+
+        _echo_evaluation(result)
+        if fields:
+            typer.echo("")
+            for score in sorted(
+                result.fields, key=lambda s: (s.recall if s.recall is not None else 2.0)
+            ):
+                gap = "" if score.rule_exists is not False else "   (no rule registered)"
+                typer.echo(f"      {score.summary()}{gap}")
+        typer.echo("")
+
+
+@evaluate_app.command("report")
+def evaluate_report(limit: Annotated[int, typer.Option()] = 40) -> None:
+    """The stored per-family scores from the most recent evaluation of each dataset."""
+    from confidentia.store import db as store_db
+
+    rows = store_db.fetch_all(
+        """
+        SELECT tenant, dataset, family, true_positives, false_positives,
+               false_negatives, truth_claims, precision, recall, f1, rule_exists
+          FROM platform.dq_evaluation_latest
+         LIMIT %s
+        """,
+        (limit,),
+    )
+    if not rows:
+        typer.echo("no evaluation runs recorded")
+        return
+
+    def fmt(value: float | None) -> str:
+        return f"{value:.3f}" if value is not None else "  -- "
+
+    typer.echo(
+        f"{'dataset':22s} {'family':24s} {'P':>6s} {'R':>6s} {'F1':>6s} "
+        f"{'tp':>7s} {'fp':>7s} {'fn':>7s}"
+    )
+    for row in rows:
+        gap = "  no rule" if row["rule_exists"] is False else ""
+        typer.echo(
+            f"{row['tenant'][:4]}/{row['dataset'][:16]:17s} {row['family']:24s} "
+            f"{fmt(row['precision'])} {fmt(row['recall'])} {fmt(row['f1'])} "
+            f"{row['true_positives']:>7,} {row['false_positives']:>7,} "
+            f"{row['false_negatives']:>7,}{gap}"
+        )
+
+
 @app.command("runs")
 def list_runs(
     limit: Annotated[int, typer.Option(help="How many recent runs to show.")] = 15,

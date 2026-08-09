@@ -40,8 +40,15 @@ if TYPE_CHECKING:  # pragma: no cover
 
 logger = get_logger(__name__)
 
+# `layer` is part of the row, not just the path: the detections table is
+# overwritten per run, so a Silver run replaces a Bronze one in place and nothing
+# on disk would say which it was. Stage 7b scores against the ground-truth answer
+# key, which describes what the *source* sent -- scoring Silver detections against
+# it silently measures the platform's own cleaning instead. Recording the layer
+# lets the evaluation refuse rather than quietly produce a flattering number.
 DETECTION_COLUMNS = (
     "record_key", "rule_id", "family", "dimension", "field", "severity", "dataset", "tenant",
+    "layer",
 )
 
 
@@ -366,7 +373,7 @@ def run_quality(
                 combined = detection_frames[0]
                 for extra in detection_frames[1:]:
                     combined = combined.unionByName(extra)
-                combined = combined.select(*DETECTION_COLUMNS)
+                combined = combined.withColumn("layer", F.lit(layer)).select(*DETECTION_COLUMNS)
 
                 # The detections table has its own schema, so it needs its own
                 # column-key mapping. Leaving the contract's mapping in place fails
@@ -382,7 +389,7 @@ def run_quality(
                         tenant,
                         plaintext={
                             "rule_id", "family", "dimension", "field",
-                            "severity", "dataset", "tenant",
+                            "severity", "dataset", "tenant", "layer",
                         },
                     ),
                 )

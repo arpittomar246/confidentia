@@ -31,6 +31,10 @@ class RunType(StrEnum):
     QUALITY = "quality"
     STREAM = "stream"
     BENCHMARK = "benchmark"
+    # Scoring the platform against the ground-truth answer key. Distinct from
+    # QUALITY on purpose: a quality run is part of the pipeline, an evaluation run
+    # reads the answers and is not allowed to influence anything downstream.
+    EVALUATION = "evaluation"
 
 
 class RunStatus(StrEnum):
