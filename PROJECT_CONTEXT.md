@@ -1,8 +1,8 @@
 # PROJECT_CONTEXT
 
 Handoff document for **CONFIDENTIA**. Written so development can continue without
-re-deriving anything. Current as of commit `69a3bd8` (16 commits, 105 tracked
-files).
+re-deriving anything. Current as of commit `74bc06e` (17 commits, 106 tracked
+files, 7 CI jobs green).
 
 ---
 
@@ -377,11 +377,15 @@ and any change to them revokes key release.
 | `check_key_material_handling.py` | AST guard: keys never in SparkConf |
 | `check_declared_dependencies.py` | AST guard: every import declared in pyproject |
 
-### CI — 8 jobs, all green
+### CI — 7 jobs, all green
 
-`lint` (ruff + mypy) · `unit-tests` · `integration-tests`(local only) ·
-`ground-truth-isolation` · `declared-dependencies` · `encryption-guarantee` ·
-`generator-determinism` · `compose-validate`
+`lint` (ruff + mypy) · `unit-tests` · `ground-truth-isolation` ·
+`declared-dependencies` · `encryption-guarantee` · `generator-determinism` ·
+`compose-validate`
+
+Integration tests are **not** a CI job — they need PostgreSQL, which the workflow
+does not provision. They run locally via `ci_local.sh` only. Adding a Postgres
+service container is a small, worthwhile task.
 
 ---
 
@@ -439,6 +443,9 @@ Full rationale in `docs/adr/`. The ones that constrain future work:
   and are audited, but no pipeline writes to it. Tokenisation is one-way in practice.
 - **Detections are overwritten per run** — no history, so no DQ trend analysis.
 - **`promotion_blocked` is computed but nothing consumes it.** Wire into Stage 8.
+- **Integration tests do not run in CI** — they need PostgreSQL and the workflow
+  provisions none. They pass locally. Adding a `services: postgres` block to the
+  workflow would close this and is a small task.
 - **Only one `ingest_date` partition exists** (all ingestion happened on one day), so
   partition pruning is not yet demonstrated.
 
