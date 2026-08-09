@@ -61,6 +61,8 @@ generators = [
     "faker>=28.0",
     "numpy>=1.26,<2.2",
     "pandas>=2.2",
+    # pandas.to_parquet needs an engine; the generators write Parquet by default.
+    "pyarrow>=15.0,<18",
 ]
 observability = [
     "prometheus-client>=0.21",
@@ -101,9 +103,30 @@ ignore = ["E501", "N812"]
 python_version = "3.11"
 warn_unused_ignores = true
 warn_redundant_casts = true
-disallow_untyped_defs = true
 ignore_missing_imports = true
 files = ["src"]
+
+# `disallow_untyped_defs` is NOT global. Requiring full annotations everywhere on a
+# codebase that is largely Spark DataFrame plumbing produces noise rather than
+# safety -- a `DataFrame -> DataFrame` signature says nothing a reader did not
+# already know. It is enforced where a type error would be a *correctness or
+# security* defect: key handling, attestation, sensitivity classification, and the
+# settings that drive them.
+[[tool.mypy.overrides]]
+module = [
+    "confidentia.crypto.*",
+    "confidentia.catalog.*",
+    "confidentia.config.*",
+    "confidentia.common.*",
+]
+disallow_untyped_defs = true
+
+# PySpark's stubs model Column operations loosely, so expressions built from
+# `functions as F` frequently type as Any and any stricter setting here reports the
+# library rather than this code.
+[[tool.mypy.overrides]]
+module = ["confidentia.pipelines.*", "confidentia.generators.*"]
+disallow_untyped_defs = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

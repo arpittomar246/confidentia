@@ -17,7 +17,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, cast
 
 import psycopg
 from psycopg.rows import dict_row
@@ -74,13 +74,14 @@ def cursor(database: str | None = None) -> Iterator[psycopg.Cursor]:
 def fetch_all(sql: str, params: Any = None, *, database: str | None = None) -> list[dict[str, Any]]:
     with cursor(database) as cur:
         cur.execute(sql, params)
-        return cur.fetchall()
+        # The pool is configured with dict_row, which the stubs do not model.
+        return cast("list[dict[str, Any]]", cur.fetchall())
 
 
 def fetch_one(sql: str, params: Any = None, *, database: str | None = None) -> dict[str, Any] | None:
     with cursor(database) as cur:
         cur.execute(sql, params)
-        return cur.fetchone()
+        return cast("dict[str, Any] | None", cur.fetchone())
 
 
 def execute(sql: str, params: Any = None, *, database: str | None = None) -> int:

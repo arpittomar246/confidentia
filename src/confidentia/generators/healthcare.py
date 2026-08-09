@@ -445,9 +445,9 @@ def generate_claim_lines(config: GeneratorConfig, scale: HealthcareScale) -> Ite
                 "paid_amount": paid,
                 "patient_responsibility": np.round(np.maximum(allowed - paid, 0.0), 2),
                 "is_denied": is_denied,
-                "denial_reason": np.where(
-                    is_denied, rng.choice(ref.DENIAL_REASONS, size=size), None
-                ),
+                "denial_reason": pd.Series(
+                    rng.choice(ref.DENIAL_REASONS, size=size), dtype="object"
+                ).where(pd.Series(is_denied), other=None),
                 "service_date": service_ts.normalize(),
                 "event_ts": service_ts,
                 "source_system": "CLAIMS-EDI",

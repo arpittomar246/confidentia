@@ -18,7 +18,10 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-      - run: pip install -e ".[dev]"
+      # The storage extra is needed even to type-check: several modules import
+      # psycopg at module scope, so without it mypy reports missing imports rather
+      # than real defects.
+      - run: pip install -e ".[dev,storage,generators]"
       - name: ruff
         run: ruff check src tests spikes
       - name: mypy
@@ -32,7 +35,9 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-      - run: pip install -e ".[dev,generators]"
+      # pytest collects every test module before filtering by marker, so the unit
+      # run still imports the integration tests and needs the storage driver.
+      - run: pip install -e ".[dev,generators,storage]"
       - run: pytest -m unit --cov=confidentia --cov-report=term-missing
 
   # The ground-truth answer key records every injected defect and every latent
@@ -93,7 +98,9 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-      - run: pip install -e ".[dev,generators]"
+      # pytest collects every test module before filtering by marker, so the unit
+      # run still imports the integration tests and needs the storage driver.
+      - run: pip install -e ".[dev,generators,storage]"
       - name: Generate twice and compare digests
         run: |
           python -m confidentia.cli generate healthcare --rows 20000 --out /tmp/gen-a

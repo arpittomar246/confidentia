@@ -34,7 +34,7 @@ import hashlib
 import hmac
 import unicodedata
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -85,7 +85,7 @@ class TokenisationResult:
     vault_rows_written: int
 
 
-def make_token_udf(key: bytes, field_name: str):
+def make_token_udf(key: bytes, field_name: str) -> Any:
     """Build a vectorised tokenising UDF bound to one key and one field.
 
     Defined at module level on purpose. PySpark resolves a pandas UDF's signature
@@ -101,7 +101,7 @@ def make_token_udf(key: bytes, field_name: str):
     from pyspark.sql import functions as F
     from pyspark.sql.types import StringType
 
-    @F.pandas_udf(StringType())
+    @F.pandas_udf(StringType())  # type: ignore[call-overload]
     def _tokenise(values: pd.Series) -> pd.Series:
         def one(value: object) -> str | None:
             if value is None or pd.isna(value):

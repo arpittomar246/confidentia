@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from psycopg import sql
 
@@ -391,6 +391,8 @@ def build_gold(tenant: str) -> GoldResult:
     started = time.perf_counter()
     result = GoldResult(tenant=tenant)
     pending_restatement: tuple[str, list[date]] | None = None
+    # Mart builders take different numbers of inputs, so the arity varies per entry.
+    sources: dict[str, tuple[Any, ...]] = {}
 
     with track_run(
         RunType.TRANSFORM,

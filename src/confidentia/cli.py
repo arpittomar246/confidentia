@@ -37,6 +37,9 @@ def info() -> None:
     )
 
 
+VALID_FORMATS = ("parquet", "csv", "jsonl")
+
+
 def _run(
     tenant: str,
     rows: int,
@@ -48,10 +51,16 @@ def _run(
     days: int,
     chunk_rows: int,
 ) -> None:
+    from typing import cast
+
     from confidentia.generators import financial as fin
     from confidentia.generators import healthcare as hc
     from confidentia.generators.base import GeneratorConfig
-    from confidentia.generators.writers import write_dataset, write_reference_table
+    from confidentia.generators.writers import Format, write_dataset, write_reference_table
+
+    if fmt not in VALID_FORMATS:
+        raise typer.BadParameter(f"format must be one of {VALID_FORMATS}, got {fmt!r}")
+    output_format = cast("Format", fmt)
 
     settings = get_settings()
     root = out or (settings.data_root / "raw")
@@ -74,19 +83,19 @@ def _run(
     total_defects = 0
 
     if tenant == "healthcare":
-        scale = hc.HealthcareScale.for_rows(rows)
+        hc_scale = hc.HealthcareScale.for_rows(rows)
         typer.echo(
-            f"healthcare scale: {scale.encounters:,} encounters, {scale.patients:,} patients, "
-            f"{scale.providers:,} providers, {scale.facilities:,} facilities"
+            f"healthcare scale: {hc_scale.encounters:,} encounters, {hc_scale.patients:,} patients, "
+            f"{hc_scale.providers:,} providers, {hc_scale.facilities:,} facilities"
         )
         write_reference_table(
-            hc.generate_facilities(config, scale), root=root, tenant=tenant, dataset="facility"
+            hc.generate_facilities(config, hc_scale), root=root, tenant=tenant, dataset="facility"
         )
         write_reference_table(
             hc.generate_plans(config), root=root, tenant=tenant, dataset="insurance_plan"
         )
         write_reference_table(
-            hc.generate_providers(config, scale), root=root, tenant=tenant, dataset="provider"
+            hc.generate_providers(config, hc_scale), root=root, tenant=tenant, dataset="provider"
         )
         for produce in (
             hc.generate_patients,
@@ -94,24 +103,29 @@ def _run(
             hc.generate_encounters,
             hc.generate_claim_lines,
         ):
-            result = write_dataset(produce(config, scale), root=root, config=config, fmt=fmt)
+            result = write_dataset(
+                produce(config, hc_scale), root=root, config=config, fmt=output_format
+            )
             total_rows += result.rows
             total_defects += result.defects
     else:
-        scale = fin.FinancialScale.for_rows(rows)
+        fin_scale = fin.FinancialScale.for_rows(rows)
         typer.echo(
-            f"financial scale: {scale.transactions:,} transactions, "
-            f"{scale.accounts:,} accounts, {scale.merchants:,} merchants"
+            f"financial scale: {fin_scale.transactions:,} transactions, "
+            f"{fin_scale.accounts:,} accounts, {fin_scale.merchants:,} merchants"
         )
         write_reference_table(
-            fin.generate_merchants(config, scale), root=root, tenant=tenant, dataset="merchant"
+            fin.generate_merchants(config, fin_scale), root=root, tenant=tenant, dataset="merchant"
         )
-        for produce in (
+        for produce_financial in (
             fin.generate_accounts,
             fin.generate_transactions,
             fin.generate_chargebacks,
         ):
-            result = write_dataset(produce(config, scale), root=root, config=config, fmt=fmt)
+            result = write_dataset(
+                produce_financial(config, fin_scale), root=root, config=config,
+                fmt=output_format
+            )
             total_rows += result.rows
             total_defects += result.defects
 

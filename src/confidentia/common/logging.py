@@ -61,7 +61,7 @@ def configure_logging(force: bool = False) -> None:
     for noisy in ("py4j", "pyspark", "botocore", "urllib3", "kafka"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
-    shared = [
+    shared: list[Any] = [
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso", utc=True),

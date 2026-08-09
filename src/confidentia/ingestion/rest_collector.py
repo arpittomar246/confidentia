@@ -129,13 +129,28 @@ class RestCollector:
 
             with httpx.Client(base_url=self.base_url) as client:
                 while True:
+                    # Bound as default arguments rather than captured, so each
+                    # closure sees the page it was created for instead of the loop
+                    # variable's final value.
+                    def fetch(page_number: int = page) -> dict[str, Any]:
+                        return self._fetch_page(client, tenant, dataset, page_number, since)
+
+                    def note(
+                        attempt: int, exc: Exception | None, page_number: int = page
+                    ) -> None:
+                        attempts.append(
+                            {
+                                "page": page_number,
+                                "attempt": attempt,
+                                "error": str(exc)[:120] if exc else None,
+                            }
+                        )
+
                     payload = with_retry(
-                        lambda p=page: self._fetch_page(client, tenant, dataset, p, since),
+                        fetch,
                         policy=self.policy,
                         description=f"GET {dataset} page {page}",
-                        on_attempt=lambda n, exc, p=page: attempts.append(
-                            {"page": p, "attempt": n, "error": str(exc)[:120] if exc else None}
-                        ),
+                        on_attempt=note,
                     )
                     total_available = payload["total"]
                     items = payload["items"]

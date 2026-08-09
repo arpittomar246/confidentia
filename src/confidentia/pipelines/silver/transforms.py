@@ -19,7 +19,9 @@ replayed rather than the data being lost.
 
 from __future__ import annotations
 
+import operator
 from dataclasses import dataclass, field
+from functools import reduce
 from typing import TYPE_CHECKING
 
 from confidentia.catalog.contracts import SchemaContract
@@ -222,10 +224,14 @@ def deduplicate(frame: DataFrame, contract: SchemaContract) -> tuple[DataFrame, 
     if not keys:
         return frame, 0
 
-    non_null_count = sum(
-        F.col(c.name).isNotNull().cast("int")
-        for c in contract.columns
-        if not c.name.startswith("_") and c.name in frame.columns
+    non_null_count = reduce(
+        operator.add,
+        (
+            F.col(c.name).isNotNull().cast("int")
+            for c in contract.columns
+            if not c.name.startswith("_") and c.name in frame.columns
+        ),
+        F.lit(0),
     )
     ordering = [F.col("_ingested_at").desc_nulls_last()] if "_ingested_at" in frame.columns else []
     ordering.append(non_null_count.desc())

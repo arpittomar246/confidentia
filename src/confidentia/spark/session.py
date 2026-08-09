@@ -25,6 +25,7 @@ data written under another's key. ``session_for_tenant`` makes the scoping expli
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -84,8 +85,8 @@ def build_session(
     java_home = _resolve_java_home(settings)
     if java_home:
         os.environ["JAVA_HOME"] = java_home
-    os.environ.setdefault("PYSPARK_PYTHON", os.sys.executable)
-    os.environ.setdefault("PYSPARK_DRIVER_PYTHON", os.sys.executable)
+    os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+    os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
 
     settings.ensure_directories()
 

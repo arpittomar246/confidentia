@@ -32,7 +32,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import pandas as pd
 
@@ -132,7 +132,7 @@ def write_dataset(
             target / DEFECTS_NAME, index=False, compression="snappy"
         )
 
-    manifest = {
+    manifest: dict[str, Any] = {
         "dataset": result.dataset,
         "tenant": result.tenant,
         "format": fmt,
@@ -184,7 +184,7 @@ def write_reference_table(
     entry = FileEntry(
         path=path.name, rows=len(frame), bytes=path.stat().st_size, sha256=sha256_file(path)
     )
-    manifest = {
+    manifest: dict[str, Any] = {
         "dataset": dataset,
         "tenant": tenant,
         "format": fmt,
@@ -201,7 +201,7 @@ def write_reference_table(
     return WriteResult(dataset, tenant, fmt, len(frame), 0, [entry])
 
 
-def read_manifest(root: Path, tenant: str, dataset: str) -> dict[str, object]:
+def read_manifest(root: Path, tenant: str, dataset: str) -> dict[str, Any]:
     return json.loads((root / tenant / dataset / MANIFEST_NAME).read_text(encoding="utf-8"))
 
 

@@ -66,7 +66,7 @@ class DisclosurePolicy:
     @classmethod
     def from_settings(cls, **overrides: Any) -> DisclosurePolicy:
         settings = get_settings().disclosure
-        base = {
+        base: dict[str, Any] = {
             "min_cell_count": settings.min_cell_count,
             "differential_privacy": settings.differential_privacy_enabled,
             "epsilon": settings.dp_epsilon,

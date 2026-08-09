@@ -132,9 +132,20 @@ class AttestationBackend:
 
     def _load_or_create_key(self) -> ec.EllipticCurvePrivateKey:
         if self.signing_key_path.exists():
-            return serialization.load_pem_private_key(
+            loaded = serialization.load_pem_private_key(
                 self.signing_key_path.read_bytes(), password=None
             )
+            # A PEM file can hold RSA, Ed25519, DH or a post-quantum key, each with
+            # a different sign()/verify() signature. Accepting whatever is on disk
+            # would mean the attestation signature algorithm is decided by the
+            # contents of a file rather than by policy.
+            if not isinstance(loaded, ec.EllipticCurvePrivateKey):
+                raise AttestationError(
+                    f"attestation signing key at {self.signing_key_path} is a "
+                    f"{type(loaded).__name__}, not an elliptic-curve key. "
+                    "Attestation evidence must be ECDSA-signed."
+                )
+            return loaded
 
         curve = ec.SECP384R1() if self.settings.crypto.attestation_curve == "P-384" else ec.SECP256R1()
         key = ec.generate_private_key(curve)
@@ -171,13 +182,15 @@ class AttestationBackend:
         measurement, hardware_rooted = self.produce_measurement()
         key = self._load_or_create_key()
 
-        payload = {
+        produced_at = datetime.now(UTC).isoformat()
+        evidence_claims: dict[str, Any] = dict(claims or {})
+        payload: dict[str, Any] = {
             "measurement": measurement,
             "nonce": nonce,
-            "produced_at": datetime.now(UTC).isoformat(),
+            "produced_at": produced_at,
             "backend": self.backend.value,
             "hardware_rooted": hardware_rooted,
-            "claims": claims or {},
+            "claims": evidence_claims,
         }
         digest = hashes.Hash(hashes.SHA256())
         digest.update(canonical_json(payload))
@@ -191,12 +204,12 @@ class AttestationBackend:
         return AttestationEvidence(
             measurement=measurement,
             nonce=nonce,
-            produced_at=payload["produced_at"],
+            produced_at=produced_at,
             backend=self.backend.value,
             hardware_rooted=hardware_rooted,
             public_key_pem=public_pem,
             signature=base64.b64encode(signature).decode(),
-            claims=payload["claims"],
+            claims=evidence_claims,
         )
 
 
@@ -243,6 +256,16 @@ class AttestationVerifier:
             public_key = serialization.load_pem_public_key(evidence.public_key_pem.encode())
         except Exception as exc:
             raise AttestationError(f"unusable public key: {exc}") from exc
+
+        # Pin the key type before verifying. `verify()` takes different arguments
+        # per algorithm, and letting the evidence choose its own algorithm is a
+        # key-confusion opening: the prover supplies this public key, so it could
+        # otherwise pick a type whose verification semantics it controls.
+        if not isinstance(public_key, ec.EllipticCurvePublicKey):
+            raise AttestationError(
+                f"evidence carries a {type(public_key).__name__}; only ECDSA "
+                "attestation keys are accepted"
+            )
 
         digest = hashes.Hash(hashes.SHA256())
         digest.update(canonical_json(evidence.signed_payload()))
