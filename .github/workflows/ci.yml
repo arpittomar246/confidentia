@@ -18,10 +18,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-      # The storage extra is needed even to type-check: several modules import
-      # psycopg at module scope, so without it mypy reports missing imports rather
-      # than real defects.
-      - run: pip install -e ".[dev,storage,generators]"
+      # mypy must see the same dependencies the code imports, or it checks a
+      # fiction: without pyspark installed, `F.pandas_udf` resolves to Any and a
+      # necessary `type: ignore` is reported as unused. Every extra the source
+      # imports at module scope is installed here, at the cost of a slower job.
+      - run: pip install -e ".[dev,storage,generators,ingestion,spark,lake,api]"
       - name: ruff
         run: ruff check src tests spikes
       - name: mypy
@@ -37,7 +38,7 @@ jobs:
           cache: pip
       # pytest collects every test module before filtering by marker, so the unit
       # run still imports the integration tests and needs the storage driver.
-      - run: pip install -e ".[dev,generators,storage]"
+      - run: pip install -e ".[dev,generators,storage,ingestion]"
       - run: pytest -m unit --cov=confidentia --cov-report=term-missing
 
   # The ground-truth answer key records every injected defect and every latent
@@ -48,6 +49,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/check_ground_truth_isolation.sh
+
+  # Two dependencies were once installed by hand and never declared, so the project
+  # worked locally and was uninstallable everywhere else. Needs no install step: it
+  # reads the AST and pyproject.toml only.
+  declared-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: python scripts/check_declared_dependencies.py
 
   # The encryption guarantee is a regression risk, not a one-off result. Delta
   # silently wrote plaintext when the properties were passed as writer options
@@ -100,7 +112,7 @@ jobs:
           cache: pip
       # pytest collects every test module before filtering by marker, so the unit
       # run still imports the integration tests and needs the storage driver.
-      - run: pip install -e ".[dev,generators,storage]"
+      - run: pip install -e ".[dev,generators,storage,ingestion]"
       - name: Generate twice and compare digests
         run: |
           python -m confidentia.cli generate healthcare --rows 20000 --out /tmp/gen-a

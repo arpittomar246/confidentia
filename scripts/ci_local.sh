@@ -35,6 +35,7 @@ step "unit tests"         python -m pytest tests/unit -q -m unit
 step "integration tests"  python -m pytest tests/integration -q -m integration
 step "ground-truth isolation" bash scripts/check_ground_truth_isolation.sh
 step "key material handling"  python scripts/check_key_material_handling.py
+step "declared dependencies"  python scripts/check_declared_dependencies.py
 
 echo
 echo "======== generator determinism (CI job) ========"
