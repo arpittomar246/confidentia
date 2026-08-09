@@ -228,6 +228,17 @@ def write_silver(
 
             final = _event_date_column(tokenised, contract)
 
+            # Repartition by the partition column before writing. Without this,
+            # every Spark task writes into every date partition: 180 dates x ~11
+            # tasks produced 1,980 files averaging 37 KB for 59k rows. Small files
+            # are expensive twice over -- one Parquet footer read per file at query
+            # time, and here each footer is *encrypted*, so the per-file cost is a
+            # key unwrap as well.
+            #
+            # Hash-partitioning on event_date puts each date in one task, so each
+            # date partition becomes a single file.
+            final = final.repartition("event_date")
+
             (
                 final.write.format("delta")
                 .mode("overwrite" if full_refresh else "append")

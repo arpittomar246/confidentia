@@ -56,6 +56,35 @@ Attribute-change distribution matches the generator's mutation script exactly:
 | Tokens do not correlate across tenants | Same email, different tokens |
 | Silver stays encrypted | `PARE` magic verified on every write |
 
+## Small-file explosion — found, measured, fixed
+
+Silver was 163 MB for ~260k rows while Bronze was 19 MB for more. The cause was a
+textbook small-file explosion: partitioning by `event_date` (180 days) meant every
+Spark task wrote into every date partition.
+
+| Table | Files | Size | Bytes/file |
+|---|---|---|---|
+| encounter *before* | 1,980 | 73 MB | ~37 KB |
+| encounter *after* | **180** | **13 MB** | ~74 KB |
+| transaction *before* | 1,260 | 45 MB | ~37 KB |
+| transaction *after* | **180** | **14 MB** | ~80 KB |
+
+Fix: `repartition("event_date")` before the write, so each date lands in one task
+and becomes one file.
+
+**The 5.6× size reduction is the striking part** — the same rows, same encoding.
+Roughly 60 MB was per-file overhead: each Parquet file carries a footer, and here
+every footer is *encrypted*, so small files cost a key unwrap as well as a seek.
+Encryption makes the small-file problem materially worse than it is in a plaintext
+lakehouse, which is a genuine finding for the performance work in Stage 9.
+
+**A measurement I am not reporting as a result.** A full `count()` returned in 0.44 s
+while a single-partition filtered count took 1.96 s. That does not mean pruning is
+slow — Delta answers an unfiltered `count()` from transaction-log statistics without
+reading any data files, so the two are not comparable. Proper query benchmarks need
+methodology that defeats metadata shortcuts, and belong to experiments E2/E4 rather
+than to an incidental check here.
+
 ## Bugs found and fixed
 
 **`changed_attributes` was systematically overstating.** A plan-only change reported
