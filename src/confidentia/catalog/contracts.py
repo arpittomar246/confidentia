@@ -174,6 +174,48 @@ PATIENT = SchemaContract(
         ColumnSpec("patient_id", "string", False, Sensitivity.INTERNAL, "Surrogate source id"),
         ColumnSpec("mrn", "string", False, Sensitivity.PHI, "Medical record number", tokenise=True),
         ColumnSpec("first_name", "string", True, Sensitivity.PII, tokenise=True),
+        ColumnSpec("last_name", "string", False, Sensitivity.PII, tokenise=True),
+        ColumnSpec("date_of_birth", "date", True, Sensitivity.PHI),
+        ColumnSpec("sex", "string", True, Sensitivity.PHI),
+        ColumnSpec("ssn", "string", True, Sensitivity.PII, tokenise=True),
+        ColumnSpec("email", "string", True, Sensitivity.PII, tokenise=True),
+        ColumnSpec("phone", "string", True, Sensitivity.PII, tokenise=True),
+        ColumnSpec("address_line1", "string", True, Sensitivity.PII),
+        ColumnSpec("city", "string", True, Sensitivity.INTERNAL),
+        ColumnSpec("state", "string", True, Sensitivity.PUBLIC),
+        ColumnSpec("postal_code", "string", True, Sensitivity.PII),
+        ColumnSpec("plan_id", "string", True, Sensitivity.INTERNAL),
+        ColumnSpec("primary_care_provider_id", "string", True, Sensitivity.INTERNAL),
+        ColumnSpec("created_at", "timestamp", True, Sensitivity.INTERNAL),
+        ColumnSpec("updated_at", "timestamp", True, Sensitivity.INTERNAL),
+        *_INGEST_ENVELOPE,
+    ),
+)
+
+PATIENT_CDC = SchemaContract(
+    dataset="patient_cdc",
+    tenant=Tenant.HEALTHCARE,
+    version=1,
+    description=(
+        "Change events replicated from the source EHR write-ahead log. "
+        "Source of the SCD2 patient dimension."
+    ),
+    business_key=("patient_id",),
+    event_time_column="_cdc_commit_ts",
+    columns=(
+        # CDC envelope. The LSN and operation are public: they describe the change,
+        # not the patient, and the SCD2 builder must sort on the LSN without
+        # holding a clinical key.
+        ColumnSpec("_cdc_operation", "string", True, Sensitivity.PUBLIC),
+        ColumnSpec("_cdc_lsn", "string", True, Sensitivity.PUBLIC, "Postgres WAL position"),
+        ColumnSpec("_cdc_commit_ts", "string", True, Sensitivity.PUBLIC),
+        ColumnSpec("_cdc_table", "string", True, Sensitivity.PUBLIC),
+        # The before-image contains the previous values of every column, so it is
+        # as sensitive as the most sensitive column it can hold.
+        ColumnSpec("_cdc_old", "string", True, Sensitivity.PHI, "Before-image, JSON"),
+        ColumnSpec("patient_id", "string", True, Sensitivity.INTERNAL),
+        ColumnSpec("mrn", "string", True, Sensitivity.PHI, tokenise=True),
+        ColumnSpec("first_name", "string", True, Sensitivity.PII, tokenise=True),
         ColumnSpec("last_name", "string", True, Sensitivity.PII, tokenise=True),
         ColumnSpec("date_of_birth", "date", True, Sensitivity.PHI),
         ColumnSpec("sex", "string", True, Sensitivity.PHI),
@@ -201,20 +243,20 @@ ENCOUNTER = SchemaContract(
     event_time_column="event_ts",
     columns=(
         ColumnSpec("encounter_id", "string", False, Sensitivity.INTERNAL),
-        ColumnSpec("patient_id", "string", True, Sensitivity.INTERNAL),
-        ColumnSpec("provider_id", "string", True, Sensitivity.INTERNAL),
+        ColumnSpec("patient_id", "string", False, Sensitivity.INTERNAL),
+        ColumnSpec("provider_id", "string", False, Sensitivity.INTERNAL),
         # Facility and state stay public so the dashboard can aggregate by site and
         # region without a key release.
-        ColumnSpec("facility_id", "string", True, Sensitivity.PUBLIC),
-        ColumnSpec("encounter_type", "string", True, Sensitivity.PUBLIC),
+        ColumnSpec("facility_id", "string", False, Sensitivity.PUBLIC),
+        ColumnSpec("encounter_type", "string", False, Sensitivity.PUBLIC),
         ColumnSpec("admit_ts", "timestamp", True, Sensitivity.PHI),
         ColumnSpec("discharge_ts", "timestamp", True, Sensitivity.PHI),
-        ColumnSpec("primary_diagnosis_code", "string", True, Sensitivity.PHI),
+        ColumnSpec("primary_diagnosis_code", "string", False, Sensitivity.PHI),
         ColumnSpec("diagnosis_system", "string", True, Sensitivity.INTERNAL),
         ColumnSpec("secondary_diagnosis_codes", "string", True, Sensitivity.PHI),
         ColumnSpec("disposition", "string", True, Sensitivity.PHI),
         ColumnSpec("triage_level", "string", True, Sensitivity.INTERNAL),
-        ColumnSpec("event_ts", "timestamp", True, Sensitivity.INTERNAL),
+        ColumnSpec("event_ts", "timestamp", False, Sensitivity.INTERNAL),
         ColumnSpec("ingest_ts", "timestamp", True, Sensitivity.PUBLIC),
         ColumnSpec("is_late_arrival", "boolean", True, Sensitivity.PUBLIC),
         ColumnSpec("source_system", "string", True, Sensitivity.PUBLIC),
@@ -232,18 +274,18 @@ CLAIM_LINE = SchemaContract(
     columns=(
         ColumnSpec("claim_line_id", "string", False, Sensitivity.INTERNAL),
         ColumnSpec("claim_number", "string", True, Sensitivity.INTERNAL),
-        ColumnSpec("encounter_id", "string", True, Sensitivity.INTERNAL),
+        ColumnSpec("encounter_id", "string", False, Sensitivity.INTERNAL),
         ColumnSpec("line_number", "int", True, Sensitivity.PUBLIC),
-        ColumnSpec("procedure_code", "string", True, Sensitivity.PHI),
+        ColumnSpec("procedure_code", "string", False, Sensitivity.PHI),
         ColumnSpec("units", "int", True, Sensitivity.INTERNAL),
-        ColumnSpec("billed_amount", "string", True, Sensitivity.INTERNAL),
+        ColumnSpec("billed_amount", "string", False, Sensitivity.INTERNAL),
         ColumnSpec("allowed_amount", "string", True, Sensitivity.INTERNAL),
         ColumnSpec("paid_amount", "string", True, Sensitivity.INTERNAL),
         ColumnSpec("patient_responsibility", "string", True, Sensitivity.INTERNAL),
         ColumnSpec("is_denied", "boolean", True, Sensitivity.PUBLIC),
         ColumnSpec("denial_reason", "string", True, Sensitivity.INTERNAL),
         ColumnSpec("service_date", "timestamp", True, Sensitivity.PHI),
-        ColumnSpec("event_ts", "timestamp", True, Sensitivity.INTERNAL),
+        ColumnSpec("event_ts", "timestamp", False, Sensitivity.INTERNAL),
         ColumnSpec("source_system", "string", True, Sensitivity.PUBLIC),
         *_INGEST_ENVELOPE,
     ),
@@ -261,8 +303,8 @@ ACCOUNT = SchemaContract(
     columns=(
         ColumnSpec("account_id", "string", False, Sensitivity.INTERNAL),
         ColumnSpec("account_number_last4", "string", True, Sensitivity.PII, tokenise=True),
-        ColumnSpec("customer_name", "string", True, Sensitivity.PII, tokenise=True),
-        ColumnSpec("email", "string", True, Sensitivity.PII, tokenise=True),
+        ColumnSpec("customer_name", "string", False, Sensitivity.PII, tokenise=True),
+        ColumnSpec("email", "string", False, Sensitivity.PII, tokenise=True),
         ColumnSpec("phone", "string", True, Sensitivity.PII, tokenise=True),
         ColumnSpec("account_type", "string", True, Sensitivity.PUBLIC),
         ColumnSpec("status", "string", True, Sensitivity.PUBLIC),
@@ -286,11 +328,11 @@ TRANSACTION = SchemaContract(
     event_time_column="event_ts",
     columns=(
         ColumnSpec("transaction_id", "string", False, Sensitivity.INTERNAL),
-        ColumnSpec("account_id", "string", True, Sensitivity.INTERNAL),
-        ColumnSpec("merchant_id", "string", True, Sensitivity.PUBLIC),
-        ColumnSpec("mcc", "string", True, Sensitivity.PUBLIC),
-        ColumnSpec("amount", "string", True, Sensitivity.INTERNAL),
-        ColumnSpec("currency", "string", True, Sensitivity.PUBLIC),
+        ColumnSpec("account_id", "string", False, Sensitivity.INTERNAL),
+        ColumnSpec("merchant_id", "string", False, Sensitivity.PUBLIC),
+        ColumnSpec("mcc", "string", False, Sensitivity.PUBLIC),
+        ColumnSpec("amount", "string", False, Sensitivity.INTERNAL),
+        ColumnSpec("currency", "string", False, Sensitivity.PUBLIC),
         ColumnSpec("channel", "string", True, Sensitivity.PUBLIC),
         ColumnSpec("entry_mode", "string", True, Sensitivity.PUBLIC),
         ColumnSpec("auth_response", "string", True, Sensitivity.PUBLIC),
@@ -300,7 +342,7 @@ TRANSACTION = SchemaContract(
         ColumnSpec("ip_address", "string", True, Sensitivity.PII, tokenise=True),
         ColumnSpec("latitude", "string", True, Sensitivity.PII),
         ColumnSpec("longitude", "string", True, Sensitivity.PII),
-        ColumnSpec("event_ts", "timestamp", True, Sensitivity.INTERNAL),
+        ColumnSpec("event_ts", "timestamp", False, Sensitivity.INTERNAL),
         ColumnSpec("ingest_ts", "timestamp", True, Sensitivity.PUBLIC),
         ColumnSpec("is_late_arrival", "boolean", True, Sensitivity.PUBLIC),
         ColumnSpec("source_system", "string", True, Sensitivity.PUBLIC),
@@ -317,10 +359,10 @@ CHARGEBACK = SchemaContract(
     event_time_column="filed_ts",
     columns=(
         ColumnSpec("chargeback_id", "string", False, Sensitivity.INTERNAL),
-        ColumnSpec("transaction_id", "string", True, Sensitivity.INTERNAL),
+        ColumnSpec("transaction_id", "string", False, Sensitivity.INTERNAL),
         ColumnSpec("reason_code", "string", True, Sensitivity.PUBLIC),
         ColumnSpec("disputed_amount", "string", True, Sensitivity.INTERNAL),
-        ColumnSpec("filed_ts", "timestamp", True, Sensitivity.INTERNAL),
+        ColumnSpec("filed_ts", "timestamp", False, Sensitivity.INTERNAL),
         ColumnSpec("status", "string", True, Sensitivity.PUBLIC),
         ColumnSpec("is_confirmed_fraud", "boolean", True, Sensitivity.INTERNAL),
         ColumnSpec("source_system", "string", True, Sensitivity.PUBLIC),
@@ -330,7 +372,7 @@ CHARGEBACK = SchemaContract(
 
 CONTRACTS: dict[tuple[str, str], SchemaContract] = {
     (c.tenant.value, c.dataset): c
-    for c in (PATIENT, ENCOUNTER, CLAIM_LINE, ACCOUNT, TRANSACTION, CHARGEBACK)
+    for c in (PATIENT, PATIENT_CDC, ENCOUNTER, CLAIM_LINE, ACCOUNT, TRANSACTION, CHARGEBACK)
 }
 
 

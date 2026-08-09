@@ -461,6 +461,79 @@ def bronze_verify(
     raise typer.Exit(0 if ok else 1)
 
 
+silver_app = typer.Typer(help="Silver layer.", no_args_is_help=True)
+app.add_typer(silver_app, name="silver")
+
+
+@silver_app.command("write")
+def silver_write(
+    tenant: Annotated[str, typer.Argument(help="healthcare | financial")],
+    dataset: Annotated[str | None, typer.Argument(help="Dataset, or omit for all.")] = None,
+    no_gate: Annotated[bool, typer.Option("--no-gate", help="Bypass the quarantine-rate circuit breaker.")] = False,
+) -> None:
+    """Conform, validate, deduplicate and tokenise Bronze into Silver."""
+    from confidentia.catalog.contracts import all_contracts
+    from confidentia.pipelines.silver.writer import SilverQualityGateError, write_silver
+
+    datasets = (
+        [dataset]
+        if dataset
+        else [
+            c.dataset
+            for c in all_contracts()
+            if c.tenant.value == tenant and c.dataset != "patient_cdc"
+        ]
+    )
+    for name in datasets:
+        try:
+            result = write_silver(tenant, name, enforce_gate=not no_gate)
+            typer.echo(f"  {result.summary()}")
+        except FileNotFoundError as exc:
+            typer.echo(f"  {tenant}/{name}: skipped ({exc})")
+        except SilverQualityGateError as exc:
+            typer.echo(f"  {tenant}/{name}: GATE FAILED -- {exc}")
+
+
+@silver_app.command("dimension")
+def silver_dimension(
+    tenant: Annotated[str, typer.Argument()] = "healthcare",
+) -> None:
+    """Build the SCD2 patient dimension from the CDC change stream."""
+    from confidentia.pipelines.silver.writer import build_patient_dimension
+
+    stats = build_patient_dimension(tenant=tenant)
+    for key, value in stats.items():
+        typer.echo(f"  {key:24s} {value}")
+
+
+@silver_app.command("quarantine")
+def silver_quarantine(
+    limit: Annotated[int, typer.Option()] = 15,
+) -> None:
+    """Records held in quarantine, grouped by reason."""
+    from confidentia.store import db as store_db
+
+    rows = store_db.fetch_all(
+        """
+        SELECT tenant, dataset, reason_code, count(*) AS n,
+               max(quarantined_at) AS latest
+          FROM platform.quarantine_record
+         WHERE replayed_at IS NULL
+         GROUP BY 1,2,3 ORDER BY n DESC LIMIT %s
+        """,
+        (limit,),
+    )
+    if not rows:
+        typer.echo("quarantine is empty")
+        return
+    typer.echo(f"{'tenant':12s} {'dataset':14s} {'reason':28s} {'count':>8s}")
+    for row in rows:
+        typer.echo(
+            f"{row['tenant']:12s} {row['dataset']:14s} {row['reason_code'][:28]:28s} "
+            f"{row['n']:>8,}"
+        )
+
+
 @app.command("runs")
 def list_runs(
     limit: Annotated[int, typer.Option(help="How many recent runs to show.")] = 15,
