@@ -123,8 +123,8 @@ class TestLowCardinalityRefusal:
 class TestKeySeparation:
     def test_token_and_vault_keys_differ(self, tokeniser: Tokeniser) -> None:
         # Compromising the token key must not also decrypt the vault.
-        assert tokeniser._token_key() != tokeniser._vault_key()  # noqa: SLF001
+        assert tokeniser._token_key() != tokeniser._vault_key()
 
     def test_token_key_differs_from_column_keys(self, tokeniser: Tokeniser) -> None:
         column_keys = set(tokeniser.hierarchy.key_material("healthcare").values())
-        assert tokeniser._token_key() not in column_keys  # noqa: SLF001
+        assert tokeniser._token_key() not in column_keys
