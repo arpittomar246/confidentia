@@ -38,7 +38,9 @@ jobs:
           cache: pip
       # pytest collects every test module before filtering by marker, so the unit
       # run still imports the integration tests and needs the storage driver.
-      - run: pip install -e ".[dev,generators,storage,ingestion]"
+      # pyspark is needed too: quality rules are Spark Column predicates, so even
+      # constructing the rule catalogue imports pyspark.sql.functions.
+      - run: pip install -e ".[dev,generators,storage,ingestion,spark]"
       - run: pytest -m unit --cov=confidentia --cov-report=term-missing
 
   # The ground-truth answer key records every injected defect and every latent
@@ -112,7 +114,9 @@ jobs:
           cache: pip
       # pytest collects every test module before filtering by marker, so the unit
       # run still imports the integration tests and needs the storage driver.
-      - run: pip install -e ".[dev,generators,storage,ingestion]"
+      # pyspark is needed too: quality rules are Spark Column predicates, so even
+      # constructing the rule catalogue imports pyspark.sql.functions.
+      - run: pip install -e ".[dev,generators,storage,ingestion,spark]"
       - name: Generate twice and compare digests
         run: |
           python -m confidentia.cli generate healthcare --rows 20000 --out /tmp/gen-a

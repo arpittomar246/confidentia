@@ -29,10 +29,15 @@ step() {
     fi
 }
 
+# These must be the *exact* commands from .github/workflows/ci.yml. A local
+# variant that merely looks equivalent is how Stage 7a passed here and failed on
+# GitHub: `pytest tests/unit` scopes collection to one directory, while CI's
+# `pytest -m unit` collects everything under testpaths and then filters, so CI
+# imports modules the local run never touched.
 step "lint / ruff"        ruff check src tests spikes
 step "lint / mypy"        mypy
-step "unit tests"         python -m pytest tests/unit -q -m unit
-step "integration tests"  python -m pytest tests/integration -q -m integration
+step "unit tests"         pytest -m unit --cov=confidentia --cov-report=term-missing -q
+step "integration tests"  pytest -m integration -q
 step "ground-truth isolation" bash scripts/check_ground_truth_isolation.sh
 step "key material handling"  python scripts/check_key_material_handling.py
 step "declared dependencies"  python scripts/check_declared_dependencies.py
