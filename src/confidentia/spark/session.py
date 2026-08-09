@@ -188,6 +188,59 @@ def set_column_keys(session: SparkSession, column_keys_property: str) -> None:
     )
 
 
+class ComplexColumnEncryptionError(RuntimeError):
+    """A sensitive column has a type Parquet cannot encrypt by name."""
+
+
+def column_keys_for_frame(
+    frame: Any,
+    tenant: str,
+    *,
+    plaintext: frozenset[str] | set[str],
+    sensitivity: Sensitivity = Sensitivity.INTERNAL,
+) -> str:
+    """Build a column-key mapping from the columns a frame actually has.
+
+    Every derived table -- Gold facts, quality detections, benchmark output --
+    has a different schema from the Silver contract that produced it. Reusing the
+    contract's mapping names columns the target does not have, and Parquet fails
+    the write with "Encrypted column [x] not in file schema column list". That has
+    now bitten three separate writers, so the derivation lives here rather than
+    being rewritten per call site.
+
+    Anything not in ``plaintext`` and not a surrogate key is encrypted. Surrogate
+    keys are SHA-256 of a natural key and disclose nothing alone, so leaving them
+    readable preserves joins without weakening anything.
+
+    Complex types raise rather than being skipped: Parquet addresses leaf paths
+    (``col.list.element``), so naming the column fails, and silently omitting it
+    would write it in **plaintext** while the code appeared to encrypt it.
+    """
+    key_id = key_ids_by_sensitivity(tenant)[sensitivity]
+
+    complex_columns = {
+        f.name for f in frame.schema.fields
+        if f.dataType.typeName() in {"array", "map", "struct"}
+    }
+    unhandled = complex_columns - set(plaintext)
+    if unhandled:
+        raise ComplexColumnEncryptionError(
+            f"columns {sorted(unhandled)} have a complex type that Parquet cannot "
+            "encrypt by name. Flatten them, or add them to the plaintext set if "
+            "they carry nothing sensitive. Omitting them would write plaintext."
+        )
+
+    encrypted = sorted(
+        c for c in frame.columns
+        if c not in plaintext and c not in complex_columns and not c.endswith("_sk")
+    )
+    if not encrypted:
+        # Nothing sensitive: encrypt one column so the footer key still applies and
+        # the table is not silently written unencrypted.
+        return f"{key_id}:{frame.columns[0]}"
+    return f"{key_id}:{','.join(encrypted)}"
+
+
 def key_ids_by_sensitivity(tenant: str, version: int = 1) -> dict[Sensitivity, str]:
     return {
         sensitivity: str(KeyId(tenant=tenant, sensitivity=sensitivity.value, version=version))

@@ -48,6 +48,18 @@ DECIMAL_FIELDS = {
     "amount", "disputed_amount", "credit_limit", "risk_score",
 }
 
+# Free-text categories: case carries no meaning, so normalise down.
+LOWERCASE_CATEGORICALS = {
+    "encounter_type", "disposition", "status", "channel",
+    "auth_response", "entry_mode", "account_type",
+}
+
+# Standardised codes where uppercase IS the standard: ISO 4217 currencies, ISO
+# 3166 country codes, USPS state abbreviations, HL7 administrative sex.
+UPPERCASE_CODES = {
+    "currency", "state", "home_state", "terminal_country", "home_country", "sex",
+}
+
 
 @dataclass
 class ConformResult:
@@ -80,14 +92,17 @@ def conform(frame: DataFrame, contract: SchemaContract) -> DataFrame:
         if spec.dtype == "string" and not spec.name.startswith("_"):
             out = out.withColumn(spec.name, repair_text(F.col(spec.name)))
 
-        # Categoricals are lower-cased so that the injected case-inconsistency
+        # Free-text categoricals are lower-cased so the injected case-inconsistency
         # defects stop fragmenting group-by results.
-        if spec.name in {
-            "encounter_type", "disposition", "status", "channel", "currency",
-            "auth_response", "entry_mode", "account_type", "sex", "state",
-            "home_state", "terminal_country", "home_country",
-        } and spec.name in out.columns:
+        if spec.name in LOWERCASE_CATEGORICALS and spec.name in out.columns:
             out = out.withColumn(spec.name, F.lower(F.col(spec.name)))
+
+        # Standardised codes are upper-cased instead. Blanket lower-casing was a
+        # real bug: ISO 4217 currency codes are uppercase by standard, so `USD`
+        # became `usd` and the validity rule failed all 58,899 transaction rows.
+        # The quality layer found it, which is what it is for.
+        elif spec.name in UPPERCASE_CODES and spec.name in out.columns:
+            out = out.withColumn(spec.name, F.upper(F.col(spec.name)))
 
         if spec.name in DECIMAL_FIELDS and spec.name in out.columns:
             # try_cast, not cast: a type-drift value like "N/A" becomes NULL and is

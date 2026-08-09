@@ -624,6 +624,134 @@ def gold_restatements(limit: Annotated[int, typer.Option()] = 10) -> None:
         )
 
 
+quality_app = typer.Typer(help="Data quality.", no_args_is_help=True)
+app.add_typer(quality_app, name="quality")
+
+
+@quality_app.command("run")
+def quality_run(
+    tenant: Annotated[str, typer.Argument(help="healthcare | financial")],
+    dataset: Annotated[str | None, typer.Argument(help="Dataset, or omit for all.")] = None,
+    layer: Annotated[str, typer.Option(help="Layer to evaluate.")] = "silver",
+) -> None:
+    """Evaluate quality rules and score the dataset."""
+    from confidentia.catalog.contracts import all_contracts
+    from confidentia.quality.runner import run_quality
+
+    datasets = (
+        [dataset]
+        if dataset
+        else [
+            c.dataset
+            for c in all_contracts()
+            if c.tenant.value == tenant and c.dataset != "patient_cdc"
+        ]
+    )
+    for name in datasets:
+        try:
+            result = run_quality(tenant, name, layer=layer)
+            typer.echo(f"  {result.summary()}")
+        except FileNotFoundError as exc:
+            typer.echo(f"  {tenant}/{name}: skipped ({exc})")
+
+
+@quality_app.command("rules")
+def quality_rules(
+    tenant: Annotated[str | None, typer.Option(help="Filter by tenant.")] = None,
+) -> None:
+    """The rule catalogue, grouped by dimension."""
+    from confidentia.quality.rules import rule_catalogue
+
+    rules = [r for r in rule_catalogue() if tenant is None or r.tenant == tenant]
+    by_dimension: dict[str, int] = {}
+    by_family: dict[str, int] = {}
+    for rule in rules:
+        by_dimension[rule.dimension.value] = by_dimension.get(rule.dimension.value, 0) + 1
+        by_family[rule.family] = by_family.get(rule.family, 0) + 1
+
+    typer.echo(f"{len(rules)} row-level rules (uniqueness and integrity added at run time)")
+    typer.echo("")
+    typer.echo("by dimension:")
+    for name, count in sorted(by_dimension.items()):
+        typer.echo(f"  {name:16s} {count:>4}")
+    typer.echo("")
+    typer.echo("by defect family:")
+    for name, count in sorted(by_family.items(), key=lambda kv: -kv[1]):
+        typer.echo(f"  {name:24s} {count:>4}")
+
+
+@quality_app.command("scores")
+def quality_scores(limit: Annotated[int, typer.Option()] = 15) -> None:
+    """Most recent dataset scores, with their dimension breakdown."""
+    from confidentia.store import db as store_db
+
+    rows = store_db.fetch_all(
+        """
+        SELECT DISTINCT ON (tenant, dataset)
+               tenant, dataset, overall_score, completeness, validity, consistency,
+               uniqueness, integrity, timeliness, rows_total, rows_failing,
+               rules_failed, rules_evaluated, promotion_blocked
+          FROM platform.dq_score
+         ORDER BY tenant, dataset, scored_at DESC
+         LIMIT %s
+        """,
+        (limit,),
+    )
+    if not rows:
+        typer.echo("no quality runs recorded")
+        return
+
+    def fmt(value: float | None) -> str:
+        return f"{value:.3f}" if value is not None else "  -- "
+
+    typer.echo(
+        f"{'dataset':22s} {'score':>6s} {'compl':>6s} {'valid':>6s} {'consis':>6s} "
+        f"{'uniq':>6s} {'integ':>6s} {'timel':>6s}  {'rules':>7s}"
+    )
+    for row in rows:
+        flag = "  BLOCKED" if row["promotion_blocked"] else ""
+        typer.echo(
+            f"{row['tenant'][:4]}/{row['dataset'][:16]:17s} {row['overall_score']:.3f} "
+            f"{fmt(row['completeness'])} {fmt(row['validity'])} {fmt(row['consistency'])} "
+            f"{fmt(row['uniqueness'])} {fmt(row['integrity'])} {fmt(row['timeliness'])} "
+            f"{row['rules_failed']:>3}/{row['rules_evaluated']:<3}{flag}"
+        )
+
+
+@quality_app.command("failures")
+def quality_failures(
+    tenant: Annotated[str, typer.Argument()],
+    dataset: Annotated[str, typer.Argument()],
+    limit: Annotated[int, typer.Option()] = 15,
+) -> None:
+    """Which rules are failing, worst first."""
+    from confidentia.store import db as store_db
+
+    rows = store_db.fetch_all(
+        """
+        SELECT r.family, r.field, r.severity, d.rows_failed, d.rows_evaluated, d.pass_rate
+          FROM platform.dq_result d
+          JOIN platform.dq_rule r USING (rule_id)
+         WHERE d.tenant = %s AND d.dataset = %s
+           AND d.run_id = (SELECT run_id FROM platform.dq_score
+                            WHERE tenant = %s AND dataset = %s
+                            ORDER BY scored_at DESC LIMIT 1)
+           AND d.rows_failed > 0
+         ORDER BY d.rows_failed DESC LIMIT %s
+        """,
+        (tenant, dataset, tenant, dataset, limit),
+    )
+    if not rows:
+        typer.echo("no failing rules in the most recent run")
+        return
+    typer.echo(f"{'family':24s} {'field':24s} {'sev':9s} {'failed':>9s} {'pass rate':>10s}")
+    for row in rows:
+        typer.echo(
+            f"{row['family']:24s} {(row['field'] or '-')[:24]:24s} {row['severity']:9s} "
+            f"{row['rows_failed']:>9,} {row['pass_rate']:>10.4f}"
+        )
+
+
 @app.command("runs")
 def list_runs(
     limit: Annotated[int, typer.Option(help="How many recent runs to show.")] = 15,
