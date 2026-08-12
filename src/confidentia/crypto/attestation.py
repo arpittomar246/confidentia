@@ -49,7 +49,31 @@ SIGNING_KEY_FILENAME = "attestation_signing_key.pem"
 # Deliberately narrow: the measurement must change when transformation logic
 # changes, and must not change when an unrelated test or document is edited, or
 # every commit would revoke every key.
-MEASURED_PACKAGES = ("crypto", "pipelines", "quality", "lineage")
+#
+# The test for inclusion is **does this code see plaintext under released keys**,
+# not "is it part of the pipeline". Stage 8 forced the question and both additions
+# below follow from that test:
+#
+# * `evaluation` requests keys and decrypts `record_key` to match detections
+#   against the answer key. It is offline tooling and deliberately outside the
+#   pipeline, which is an argument about *where it sits*, not about what it can
+#   read. The measurement answers "which code touched this data", and evaluation
+#   touches it.
+# * `streaming` is empty until Stage 9 but will write to the lake, so it is listed
+#   now rather than being remembered later — the failure mode of forgetting is a
+#   consumer writing encrypted Delta from unattested code, which nothing would
+#   report.
+#
+# The cost is real and accepted: editing either package now revokes key release
+# until `keys approve` runs. That tax is the mechanism, not a side effect of it.
+MEASURED_PACKAGES = (
+    "crypto",
+    "pipelines",
+    "quality",
+    "lineage",
+    "evaluation",
+    "streaming",
+)
 
 
 class AttestationError(RuntimeError):

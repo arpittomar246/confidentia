@@ -43,6 +43,53 @@ jobs:
       - run: pip install -e ".[dev,generators,storage,ingestion,spark]"
       - run: pytest -m unit --cov=confidentia --cov-report=term-missing
 
+  # The integration tests assert the properties the ingestion design rests on:
+  # the same content never loads twice, a failed run is recorded as failed rather
+  # than left dangling, and a watermark can be rolled back. They passed locally
+  # from Stage 3 onwards but were not a CI job, because the workflow provisioned
+  # no database -- so nothing would have caught a change that broke them on a
+  # machine other than this one.
+  integration-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: confidentia
+          POSTGRES_PASSWORD: confidentia
+          POSTGRES_DB: confidentia
+        ports: ["5432:5432"]
+        # Without the health check the job races the container and fails
+        # intermittently, which is worse than not running at all: a flaky job
+        # gets ignored, and then so do its real failures.
+        options: >-
+          --health-cmd "pg_isready -U confidentia"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_USER: confidentia
+      POSTGRES_PASSWORD: confidentia
+      POSTGRES_DATABASE: confidentia
+      # The OLTP database is created by migration 003; point it at the same
+      # server. Only the platform migrations matter for these tests.
+      POSTGRES_OLTP_DATABASE: ehr_oltp
+      CONFIDENTIA_DATA_ROOT: /tmp/confidentia-data
+      CONFIDENTIA_KEYSTORE_PASSPHRASE: ci-only-throwaway-passphrase
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -e ".[dev,generators,storage,ingestion,spark]"
+      - name: create the OLTP database
+        run: PGPASSWORD=confidentia psql -h localhost -U confidentia -d confidentia -c "CREATE DATABASE ehr_oltp"
+      - name: apply migrations
+        run: python -m confidentia.cli db migrate
+      - run: pytest -m integration
+
   # The ground-truth answer key records every injected defect and every latent
   # fraud label. A pipeline that read it would score perfectly and mean nothing,
   # so isolation is enforced rather than trusted.

@@ -404,7 +404,12 @@ def keys_check() -> None:
     if policy is None:
         typer.echo(f"measurement {measurement[:16]}... is NOT approved for key release.")
         typer.echo("")
-        typer.echo("A measured package (crypto, pipelines, quality, lineage) has changed")
+        from confidentia.crypto.attestation import MEASURED_PACKAGES
+
+        # Listed from the constant rather than repeated in prose: this message is
+        # the one an operator reads at 03:00, and a hard-coded list that has
+        # drifted from the code sends them looking in the wrong package.
+        typer.echo(f"A measured package ({', '.join(MEASURED_PACKAGES)}) has changed")
         typer.echo("since the last approval, so every task that touches the lake will be")
         typer.echo("refused its keys. Approve this build, or restore the approved one:")
         typer.echo("")
@@ -421,9 +426,9 @@ def keys_approve(
 ) -> None:
     """Approve the currently running code for key release.
 
-    Needed after any change to a measured package (crypto, pipelines, quality,
-    lineage). That inconvenience is the feature: it is what makes "which code
-    touched this data" enforceable rather than merely recorded.
+    Needed after any change to a measured package (see
+    `attestation.MEASURED_PACKAGES`). That inconvenience is the feature: it is what
+    makes "which code touched this data" enforceable rather than merely recorded.
     """
     from confidentia.crypto.broker import KeyBroker
 

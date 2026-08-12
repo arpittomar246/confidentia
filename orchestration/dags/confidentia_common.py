@@ -93,9 +93,9 @@ def preflight_attestation(task_id: str = "preflight_attestation"):
     """Fail fast if the running code is not approved for key release.
 
     Every DAG whose tasks touch the lake starts with this. Changing any measured
-    package (crypto, pipelines, quality, lineage) revokes key release, so the first
-    run after a deploy *should* fail — that tax is what makes "which code touched
-    this data" enforceable rather than merely recorded.
+    package revokes key release, so the first run after a deploy *should* fail —
+    that tax is what makes "which code touched this data" enforceable rather than
+    merely recorded.
 
     Without it the failure still happens, but sixty seconds into starting a Spark
     session, once per task, inside a `KeyReleaseDeniedError` traceback. This asks

@@ -186,10 +186,10 @@ and are not meant to.
 │   └── store/{db,migrations,repositories}.py + sql/  612 + 9 migrations
 ├── orchestration/dags/           5 DAGs + confidentia_common.py   Stage 8
 ├── tests/  (conftest + 9 unit + 1 integration)  2,050 lines
-├── scripts/  (18 operational scripts, see §9)
-├── docs/adr/ (8 ADRs)  docs/stage-reports/ (10 reports)
+├── scripts/  (20 operational scripts, see §9)
+├── docs/adr/ (9 ADRs)  docs/stage-reports/ (10 reports)
 ├── spikes/pme/                   Stage 1 feasibility spike (still runnable, used by CI)
-├── .github/workflows/ci.yml      9 jobs
+├── .github/workflows/ci.yml      10 jobs
 ├── docker-compose.yml            5 profiles (CI-validated, not used locally)
 └── pyproject.toml
 
@@ -506,9 +506,17 @@ table is overwritten per run, so a Silver run replaces the Bronze detections in
 place. `evaluate` refuses rather than scoring the wrong layer, but the fix is
 always to re-run `quality run <tenant> --layer bronze`.
 
-**`keys approve` must be the last step before running anything** after editing
-`crypto/`, `pipelines/`, `quality/` or `lineage/` — those are the measured packages,
-and any change to them revokes key release.
+**`keys approve` must be the last step before running anything** after editing a
+measured package: `crypto/`, `pipelines/`, `quality/`, `lineage/`, `evaluation/`
+and `streaming/`. Any change to them revokes key release.
+
+The test for membership is **does this code see plaintext under released keys**,
+not "is it part of the pipeline". `evaluation/` was added after Stage 8 on exactly
+that basis: it is deliberately outside the pipeline, but it decrypts `record_key`
+to match detections against the answer key, and the measurement answers "which code
+touched this data". `streaming/` is listed before it exists, because the failure
+mode of remembering later is a consumer writing encrypted Delta from unattested
+code, which nothing would report.
 
 ### Scripts
 
@@ -532,6 +540,8 @@ and any change to them revokes key release.
 | `verify_gate.sh` | **8.** The gate's four exit statuses. Everything else about the gate would survive it printing `BLOCKED` and returning 0 |
 | `verify_dags.sh` | **8.** All five DAGs run, and an unreachable threshold fails the DAG run with Silver never executing |
 | `check_dag_cli_contract.py` | **8.** AST guard: every `cli(...)` a DAG invokes resolves against the real Typer tree. No Airflow needed |
+| `backup_keystore.sh` | **Run this.** Copies the keystore outside the data root, keeping the last 3. The keystore is the only thing in the data root that is not regenerable, and `reset_data.sh` is the realistic threat to it |
+| `simulate_ci_integration.sh` | Runs the `integration-tests` CI job's exact steps against throwaway databases, so the workflow can be verified without pushing |
 
 `rebuild_pipeline.sh` encodes three orderings that are easy to get wrong by hand:
 `keys approve` after any measured-package edit; the **REST redelivery of
@@ -555,15 +565,19 @@ For the UI: `airflow scheduler` and `airflow webserver --port 8080` in separate
 shells, **both with the passphrase in their environment** — `BashOperator`
 inherits it, and the platform has no fallback for it anywhere.
 
-### CI — 9 jobs, all green
+### CI — 10 jobs, all green
 
-`lint` (ruff + mypy) · `unit-tests` · `ground-truth-isolation` ·
-`plan-rule-coverage` · `dag-cli-contract` · `declared-dependencies` ·
-`encryption-guarantee` · `generator-determinism` · `compose-validate`
+`lint` (ruff + mypy) · `unit-tests` · **`integration-tests`** ·
+`ground-truth-isolation` · `plan-rule-coverage` · `dag-cli-contract` ·
+`declared-dependencies` · `encryption-guarantee` · `generator-determinism` ·
+`compose-validate`
 
-Integration tests are **not** a CI job — they need PostgreSQL, which the workflow
-does not provision. They run locally via `ci_local.sh` only. Adding a Postgres
-service container is a small, worthwhile task.
+`integration-tests` runs against a `postgres:18` service container and applies all
+migrations to an **empty** database first. That last part is the point: the tests
+passed from Stage 3 onwards against a database that already had this project's data
+in it, so "works locally" never established that they work from nothing.
+`scripts/simulate_ci_integration.sh` runs the job's exact steps against throwaway
+databases, which is how the workflow was verified without pushing to find out.
 
 `ruff` covers `orchestration` too, but **`mypy` does not**: the DAGs import
 `airflow`, which is deliberately absent from the project venv, so type-checking
@@ -679,9 +693,9 @@ Full rationale in `docs/adr/`. The ones that constrain future work:
   — the gate sits between Bronze and Silver and fails the task. Note the gate now
   re-decides against the *current* threshold rather than reading this flag, so
   `dq_score.promotion_blocked` is a historical record, not the control.
-- **Integration tests do not run in CI** — they need PostgreSQL and the workflow
-  provisions none. They pass locally. Adding a `services: postgres` block to the
-  workflow would close this and is a small task.
+- ~~Integration tests do not run in CI.~~ **Closed after Stage 8** — the
+  `integration-tests` job runs against a `postgres:18` service container, applying
+  every migration to an empty database first.
 - **Only one `ingest_date` partition exists** (all ingestion happened on one day), so
   partition pruning is not yet demonstrated.
 
@@ -757,9 +771,15 @@ All of these are real findings or accepted costs. **None is an artefact.**
   is taken to mean.
 
 ### Environment
-- **Data is not backed up** — only code is. `~/confidentia-data` (111 MB + keystore +
-  Postgres) is regenerable *except the keystore*: lose it and existing encrypted
-  tables are unreadable forever. Back it up manually, never to the repo.
+- **Only the keystore is irreplaceable.** Everything else in `~/confidentia-data`
+  regenerates in about ten minutes via `reset_data.sh` + `rebuild_pipeline.sh`; lose
+  the keystore and every existing encrypted table is unreadable forever, with no
+  recovery path and no escrow by design. `scripts/backup_keystore.sh` copies it to
+  `~/confidentia-backups/` (outside the repo *and* outside the data root, keeping
+  the last 3) — **run it after `keys init`, and never commit it.**
+  That defends against `reset_data.sh`, which is the realistic threat. It does not
+  defend against losing the disk; copying it off-machine is a decision about where
+  key material may live and is deliberately left to a human.
 - pandas 3.0.5 / numpy 2.1.3 installed; `pyproject` pins `numpy<2.2`, `pandas>=2.2`.
   Tests pass but the pin is looser than the installed reality.
 
@@ -805,18 +825,26 @@ All of these are real findings or accepted costs. **None is an artefact.**
 **Goal:** stream the financial tenant through Kafka with Structured Streaming
 consumers, so the platform has a genuine low-latency path alongside the batch one.
 
-### Before starting, decide one thing
+### The blocking decision is already made
 
-**Whether streaming writes into the same Bronze tables as batch, or its own.**
+**Streaming writes into the same Bronze tables as batch**
+([ADR 0014](docs/adr/0014-streaming-writes-to-shared-bronze.md)). Decided ahead of
+implementation because retrofitting it means rewriting the checkpointing.
 
-Sharing them is the honest medallion answer and creates a real problem worth
-solving: concurrent writers to one Delta table, plus a small-file explosion from
-micro-batches that Stage 5 already had to fix once. Separate `bronze_stream/`
-tables sidestep both and make the comparison in experiment E1 cleaner, at the cost
-of two code paths that can diverge.
+The consumer is **a fourth source, not a special case**: it sets `_source_system`
+and goes through the same ingest envelope as the collectors. Bronze already
+tolerates several sources, and Stage 7c made Bronze uniqueness *per source system*
+precisely so a redelivery is not confused with a duplicate.
 
-Record the choice in an ADR before writing a consumer. Retrofitting it later means
-rewriting the checkpointing.
+The two problems this creates — Delta concurrent writers, and a micro-batch
+small-file explosion — are the ones worth having. A platform where streaming writes
+somewhere else is two pipelines sharing a repository, and "where should the boundary
+be drawn" then becomes a question about two systems rather than one.
+
+**What would overturn it:** if Delta's optimistic concurrency produces repeated
+commit conflicts rather than occasional retries at the trigger interval the
+experiments need. That is a measurement, so it will be visible — and "we had to
+split the tables" is itself a result worth reporting, not a quiet workaround.
 
 ### Memory is the binding constraint, again
 
@@ -855,11 +883,10 @@ and is not installed.
    `column_keys_for_frame` treatment and the same `PARE` assertion after write —
    Delta silently writes plaintext if the properties are set as writer options
    (ADR 0007), and a streaming writer is a new place to make that mistake.
-4. **`keys approve` after adding `streaming/`** — but note `streaming` is *not*
-   currently in `MEASURED_PACKAGES` (`crypto`, `pipelines`, `quality`, `lineage`).
-   A streaming consumer writes to the lake under released keys, so it probably
-   should be. Decide deliberately; adding it is a one-line change with a real
-   development-tax consequence.
+4. **`streaming` is already in `MEASURED_PACKAGES`**, added after Stage 8 before
+   the package had any content. Every edit to a consumer will therefore revoke key
+   release until `keys approve` runs. That is the intended tax, not a misconfiguration
+   — expect it on the first run after each change and use `keys check` to confirm.
 
 ### Deliverables
 

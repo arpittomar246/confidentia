@@ -58,6 +58,10 @@ airflow.db
 airflow.cfg
 webserver_config.py
 
+# Local scratch/diagnostic scripts. Underscore-prefixed by convention so they stay
+# out of the operational scripts in §9 of PROJECT_CONTEXT and out of git status.
+scripts/_*
+
 # --- OS / editor ---
 .DS_Store
 Thumbs.db
