@@ -39,8 +39,10 @@ jobs:
       # pytest collects every test module before filtering by marker, so the unit
       # run still imports the integration tests and needs the storage driver.
       # pyspark is needed too: quality rules are Spark Column predicates, so even
-      # constructing the rule catalogue imports pyspark.sql.functions.
-      - run: pip install -e ".[dev,generators,storage,ingestion,spark]"
+      # constructing the rule catalogue imports pyspark.sql.functions. `api` joined
+      # the list at Stage 10 for the same reason: tests/api/test_security.py is a
+      # unit test and imports FastAPI at module scope.
+      - run: pip install -e ".[dev,generators,storage,ingestion,spark,api]"
       - run: pytest -m unit --cov=confidentia --cov-report=term-missing
 
   # The integration tests assert the properties the ingestion design rests on:
@@ -83,7 +85,7 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-      - run: pip install -e ".[dev,generators,storage,ingestion,spark]"
+      - run: pip install -e ".[dev,generators,storage,ingestion,spark,api]"
       - name: create the OLTP database
         run: PGPASSWORD=confidentia psql -h localhost -U confidentia -d confidentia -c "CREATE DATABASE ehr_oltp"
       - name: apply migrations
@@ -125,6 +127,19 @@ jobs:
         with: {python-version: "3.11"}
       - run: pip install -e ".[dev,generators,storage,ingestion,spark,lake,api,observability]"
       - run: python scripts/check_dag_cli_contract.py
+
+  # The OpenAPI schema is committed so Stage 11 can generate a typed client without
+  # standing up the API. A route or response shape changed without a re-export is
+  # exactly the drift a committed artefact is supposed to make visible, so the check
+  # regenerates it and compares.
+  openapi-schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install -e ".[dev,generators,storage,ingestion,spark,api]"
+      - run: python scripts/export_openapi.py --check
 
   # Two dependencies were once installed by hand and never declared, so the project
   # worked locally and was uninstallable everywhere else. Needs no install step: it

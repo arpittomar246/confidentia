@@ -1274,5 +1274,113 @@ def list_runs(
         )
 
 
+api_app = typer.Typer(help="The read-only serving layer.", no_args_is_help=True)
+app.add_typer(api_app, name="api")
+
+
+@api_app.command("serve")
+def api_serve(
+    host: Annotated[str | None, typer.Option(help="Bind address.")] = None,
+    port: Annotated[int | None, typer.Option(help="Bind port.")] = None,
+    reload: Annotated[bool, typer.Option(help="Reload on source change (development).")] = False,
+) -> None:
+    """Run the API.
+
+    Uses uvicorn's factory mode so the application -- and therefore the connection
+    pool -- is constructed inside the worker process. Importing a module-level app
+    would open a pool in the parent and hand each forked worker a copy of a socket
+    it does not own.
+    """
+    import uvicorn
+
+    settings = get_settings()
+    bind_host = host or settings.api.host
+    bind_port = port or settings.api.port
+    typer.echo(f"serving on http://{bind_host}:{bind_port}  (docs at /docs)")
+    typer.echo(f"auth mode: {settings.auth.mode.value}   read-only: {settings.api.read_only}")
+    uvicorn.run(
+        "confidentia.api.app:create_app",
+        factory=True,
+        host=bind_host,
+        port=bind_port,
+        reload=reload,
+        log_level=settings.log_level.lower(),
+    )
+
+
+@api_app.command("token")
+def api_token(
+    subject: Annotated[str, typer.Argument(help="Who the token identifies.")] = "dev",
+    role: Annotated[list[str] | None, typer.Option(help="viewer | operator | auditor")] = None,
+    minutes: Annotated[int | None, typer.Option(help="Lifetime in minutes.")] = None,
+) -> None:
+    """Mint a development bearer token.
+
+    Only works in `local` auth mode, and refuses otherwise: under OIDC the identity
+    provider issues tokens and this process holds no signing key.
+    """
+    from confidentia.api.security import Role, issue_local_token
+
+    try:
+        roles = [Role(r) for r in (role or ["viewer"])]
+    except ValueError as exc:
+        typer.echo(f"unknown role: {exc}")
+        typer.echo(f"valid roles: {', '.join(r.value for r in Role)}")
+        raise typer.Exit(code=2) from exc
+
+    try:
+        token = issue_local_token(subject, roles, ttl_minutes=minutes)
+    except ValueError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(token)
+
+
+@api_app.command("routes")
+def api_routes() -> None:
+    """List every route and the role it requires.
+
+    Reads the role off the real dependency tree rather than a hand-written table,
+    so a route whose guard is changed shows the change here. A route reported as
+    `public` genuinely has no principal dependency.
+    """
+    from confidentia.api.app import create_app
+
+    def walk(routes: list) -> list:
+        """Flatten the route tree.
+
+        FastAPI 0.141 keeps an included router as a single lazy `_IncludedRouter`
+        entry in `app.routes` rather than splicing its routes in, so a flat scan
+        finds only `/docs` and `/openapi.json`.
+        """
+        flat = []
+        for route in routes:
+            inner = getattr(route, "original_router", None)
+            if inner is not None:
+                flat.extend(walk(inner.routes))
+            else:
+                flat.append(route)
+        return flat
+
+    typer.echo(f"{'method':7s} {'path':44s} role")
+    for route in sorted(walk(create_app().routes), key=lambda r: getattr(r, "path", "")):
+        path = getattr(route, "path", None)
+        methods = getattr(route, "methods", None) or set()
+        if path is None or not methods - {"HEAD", "OPTIONS"}:
+            continue
+        dependant = getattr(route, "dependant", None)
+        role = "public"
+        if dependant is not None:
+            # require_role tags each guard with the role it enforces, so this walks
+            # the real dependency tree rather than a table that could go stale.
+            for dep in dependant.dependencies:
+                required = getattr(dep.call, "required_role", None)
+                if required is not None:
+                    role = str(required)
+        for method in sorted(methods - {"HEAD", "OPTIONS"}):
+            typer.echo(f"{method:7s} {path:44s} {role}")
+
+
 if __name__ == "__main__":
     app()

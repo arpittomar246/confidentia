@@ -36,6 +36,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
+# The development JWT secret. Named rather than inlined because two places must
+# agree: the default below, and the validator that refuses to let it be the value
+# in force outside the local environment.
+DEV_JWT_SECRET = "dev-only-change-me-and-long-enough-for-hs256"
+
 
 class Environment(StrEnum):
     LOCAL = "local"
@@ -270,22 +275,113 @@ class QualitySettings(BaseSettings):
     freshness_sla_minutes: int = 60
 
 
+class AuthMode(StrEnum):
+    """How bearer tokens presented to the API are verified.
+
+    ``OIDC`` is the real mode: tokens are signed by an external identity provider
+    with an asymmetric key, and the API verifies them against the provider's
+    published JWKS. It never holds a signing key, so a compromised API cannot mint
+    a token for itself.
+
+    ``LOCAL`` exists because this project has no identity provider to point at. It
+    verifies HS256 tokens minted by ``confidentia api token`` against a shared
+    secret, which means the verifier *is* the issuer -- acceptable for development
+    and refused outside it (see ``AuthSettings``).
+    """
+
+    OIDC = "oidc"
+    LOCAL = "local"
+
+
 class AuthSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="AUTH_", extra="ignore")
 
-    jwt_secret: SecretStr = SecretStr("dev-only-change-me")
+    mode: AuthMode = AuthMode.LOCAL
+
+    # --- LOCAL mode ---
+    # At least 32 bytes: PyJWT warns below that for HS256, and a development
+    # default that trips a security warning on every token teaches people to
+    # ignore the warning.
+    jwt_secret: SecretStr = SecretStr(DEV_JWT_SECRET)
     jwt_algorithm: str = "HS256"
     access_token_minutes: int = 30
     refresh_token_days: int = 7
     argon2_time_cost: int = 2
     argon2_memory_kib: int = 65536
 
+    # --- OIDC mode ---
+    # No defaults that would let a misconfigured deployment silently accept
+    # anything: `issuer` and `audience` are both checked, and a blank one is a
+    # startup error rather than a skipped claim check.
+    oidc_issuer: str = ""
+    oidc_audience: str = ""
+    oidc_jwks_url: str = ""
+    # Which claim carries the role list. Providers disagree: Entra uses `roles`,
+    # Keycloak nests them under `realm_access.roles`, Auth0 uses a namespaced URI.
+    # A dotted path is resolved against the decoded claims.
+    oidc_roles_claim: str = "roles"
+    # Asymmetric only. Permitting HS256 here would let anyone who can read the
+    # JWKS document sign tokens with the public key as the HMAC secret -- the
+    # classic algorithm-confusion attack.
+    oidc_algorithms: tuple[str, ...] = ("RS256", "ES256")
+    jwks_cache_seconds: int = 300
+    # Tolerance for clock skew between the provider and this host, in seconds.
+    leeway_seconds: int = 60
+
     @model_validator(mode="after")
     def _reject_default_secret_outside_local(self) -> AuthSettings:
         env = os.getenv("CONFIDENTIA_ENV", Environment.LOCAL)
-        if env != Environment.LOCAL and self.jwt_secret.get_secret_value() == "dev-only-change-me":
+        if env == Environment.LOCAL:
+            return self
+        if self.mode is AuthMode.LOCAL:
+            # A shared-secret verifier in a deployed environment means anyone who
+            # can read the config can mint an auditor token. Fail at startup, not
+            # at the first request.
+            raise ValueError(
+                "AUTH_MODE=local is refused outside the local environment: the API "
+                "would both issue and verify its own tokens. Set AUTH_MODE=oidc."
+            )
+        if self.jwt_secret.get_secret_value() == DEV_JWT_SECRET:
             raise ValueError("AUTH_JWT_SECRET must be set outside the local environment")
         return self
+
+    @model_validator(mode="after")
+    def _oidc_requires_issuer_and_audience(self) -> AuthSettings:
+        if self.mode is AuthMode.OIDC and not (
+            self.oidc_issuer and self.oidc_audience and self.oidc_jwks_url
+        ):
+            raise ValueError(
+                "AUTH_MODE=oidc requires AUTH_OIDC_ISSUER, AUTH_OIDC_AUDIENCE and "
+                "AUTH_OIDC_JWKS_URL. Verifying a signature without checking the "
+                "issuer and audience accepts tokens minted for a different service."
+            )
+        return self
+
+
+class ApiSettings(BaseSettings):
+    """The read-only serving layer.
+
+    ``read_only`` is a setting rather than a constant so that the decision is
+    visible in configuration and in ``/meta``, but it defaults closed and nothing
+    in the codebase flips it: ADR 0016 records why the API does not trigger
+    pipeline runs.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="API_", extra="ignore")
+
+    host: str = "127.0.0.1"
+    port: int = 8000
+    root_path: str = ""
+    # Browsers block cross-origin XHR, so the dashboard's dev server needs naming.
+    cors_origins: tuple[str, ...] = ("http://localhost:5173", "http://127.0.0.1:5173")
+    default_page_size: int = 50
+    # A hard ceiling. `platform.quarantine_record` has ~31k rows; an unbounded
+    # limit would let one request materialise all of them into JSON.
+    max_page_size: int = 500
+    read_only: bool = True
+    # Slow-query visibility without an APM: anything over this is logged with its
+    # route and duration.
+    slow_query_ms: int = 1000
 
 
 class Settings(BaseSettings):
@@ -316,6 +412,7 @@ class Settings(BaseSettings):
     disclosure: DisclosureSettings = Field(default_factory=DisclosureSettings)
     quality: QualitySettings = Field(default_factory=QualitySettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)
+    api: ApiSettings = Field(default_factory=ApiSettings)
 
     # ---- derived paths -------------------------------------------------
 

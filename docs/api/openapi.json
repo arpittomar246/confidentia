@@ -1,0 +1,2703 @@
+{
+  "components": {
+    "schemas": {
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "Layer": {
+        "enum": [
+          "bronze",
+          "silver",
+          "gold",
+          "quarantine"
+        ],
+        "title": "Layer",
+        "type": "string"
+      },
+      "Tenant": {
+        "enum": [
+          "healthcare",
+          "financial"
+        ],
+        "title": "Tenant",
+        "type": "string"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "description": "OIDC access token",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "\nRead-only access to the CONFIDENTIA platform's metadata store and its\ndisclosure-controlled Gold marts.\n\nEvery value returned is read from a table or view the pipeline already writes. The\nAPI computes no metrics of its own, holds no key material, and cannot trigger a\npipeline run -- see ADR 0016.\n\nAuthentication is a bearer token. Roles form a disclosure ladder:\n`viewer` < `operator` < `auditor`.\n",
+    "title": "CONFIDENTIA API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/audit/attestation-policy": {
+      "get": {
+        "description": "``hardware_rooted`` is returned per row and must be rendered.\n\nUnder the ``sim`` backend a measurement is a hash of this repository's source,\nnot an SGX MRENCLAVE. The policy row carries that distinction so a client cannot\npresent a simulated attestation as a hardware-rooted one.",
+        "operationId": "attestation_policy_audit_attestation_policy_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Attestation Policy Audit Attestation Policy Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Which measurements may hold which keys",
+        "tags": [
+          "audit"
+        ]
+      }
+    },
+    "/audit/disclosure": {
+      "get": {
+        "description": "How much of each mart C4 blanked, and why.\n\n``complementary_suppressed`` is the count that matters: primary suppression\nalone leaves a small cell recoverable by subtracting the published cells from a\npublished total, so a mart with primary suppression and no complementary\nsuppression has usually not been protected.",
+        "operationId": "disclosure_audit_disclosure_get",
+        "parameters": [
+          {
+            "description": "Filter to one tenant",
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Tenant"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one tenant",
+              "title": "Tenant"
+            }
+          },
+          {
+            "description": "Rows to return",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Rows to return",
+              "title": "Limit"
+            }
+          },
+          {
+            "description": "Rows to skip",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Rows to skip",
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Disclosure Audit Disclosure Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Suppression applied to each published mart",
+        "tags": [
+          "audit"
+        ]
+      }
+    },
+    "/audit/key-releases": {
+      "get": {
+        "description": "Refusals are the interesting rows, so they are not filtered out by default.\n\nAn audit log that only records successes cannot answer the question it exists\nfor. ``granted=false`` isolates the four refusal paths: unknown measurement,\nrevoked policy, tenant not permitted, and stale or replayed evidence.",
+        "operationId": "key_releases_audit_key_releases_get",
+        "parameters": [
+          {
+            "description": "Filter to one tenant",
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Tenant"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one tenant",
+              "title": "Tenant"
+            }
+          },
+          {
+            "in": "query",
+            "name": "granted",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Granted"
+            }
+          },
+          {
+            "description": "Rows to return",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Rows to return",
+              "title": "Limit"
+            }
+          },
+          {
+            "description": "Rows to skip",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Rows to skip",
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Key Releases Audit Key Releases Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Key grants and refusals",
+        "tags": [
+          "audit"
+        ]
+      }
+    },
+    "/audit/key-releases/summary": {
+      "get": {
+        "operationId": "key_release_summary_audit_key_releases_summary_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Key Release Summary Audit Key Releases Summary Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Grants and refusals by reason",
+        "tags": [
+          "audit"
+        ]
+      }
+    },
+    "/audit/restatements": {
+      "get": {
+        "operationId": "restatements_audit_restatements_get",
+        "parameters": [
+          {
+            "description": "Filter to one tenant",
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Tenant"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one tenant",
+              "title": "Tenant"
+            }
+          },
+          {
+            "description": "Rows to return",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Rows to return",
+              "title": "Limit"
+            }
+          },
+          {
+            "description": "Rows to skip",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Rows to skip",
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Restatements Audit Restatements Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Marts recomputed after late-arriving data",
+        "tags": [
+          "audit"
+        ]
+      }
+    },
+    "/evaluation/coverage": {
+      "get": {
+        "description": "Should be empty. Stage 7c took this from 5 to 0, and CI keeps it there.\n\nKept as an endpoint precisely because it should be empty: a dashboard tile that\nis normally blank and occasionally is not is how the next coverage gap gets\nnoticed before it depresses a recall number in a report.",
+        "operationId": "coverage_evaluation_coverage_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Coverage Evaluation Coverage Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Defect families with no rule at all",
+        "tags": [
+          "evaluation"
+        ]
+      }
+    },
+    "/evaluation/latest": {
+      "get": {
+        "operationId": "latest_evaluation_latest_get",
+        "parameters": [
+          {
+            "description": "Filter to one tenant",
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Tenant"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one tenant",
+              "title": "Tenant"
+            }
+          },
+          {
+            "description": "Filter to one dataset",
+            "in": "query",
+            "name": "dataset",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one dataset",
+              "title": "Dataset"
+            }
+          },
+          {
+            "description": "Filter to one medallion layer",
+            "in": "query",
+            "name": "layer",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Layer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one medallion layer",
+              "title": "Layer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Latest Evaluation Latest Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Latest P/R/F1 per dataset and defect family",
+        "tags": [
+          "evaluation"
+        ]
+      }
+    },
+    "/evaluation/summary": {
+      "get": {
+        "description": "Aggregated from the confusion-matrix counts, not by averaging F1.\n\nAveraging per-family F1 weights a family with three defects the same as one with\nfour hundred. Summing TP/FP/FN and dividing once is the micro-average, and it is\nthe number that answers \"how good is the quality layer on this dataset\".",
+        "operationId": "summary_evaluation_summary_get",
+        "parameters": [
+          {
+            "description": "Filter to one tenant",
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Tenant"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one tenant",
+              "title": "Tenant"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Summary Evaluation Summary Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Weighted P/R/F1 per dataset",
+        "tags": [
+          "evaluation"
+        ]
+      }
+    },
+    "/gate/blocked": {
+      "get": {
+        "operationId": "blocked_gate_blocked_get",
+        "parameters": [
+          {
+            "description": "Filter to one tenant",
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Tenant"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one tenant",
+              "title": "Tenant"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Blocked Gate Blocked Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Datasets the gate is blocking right now",
+        "tags": [
+          "gate"
+        ]
+      }
+    },
+    "/gate/decisions": {
+      "get": {
+        "operationId": "decisions_gate_decisions_get",
+        "parameters": [
+          {
+            "description": "Filter to one tenant",
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Tenant"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one tenant",
+              "title": "Tenant"
+            }
+          },
+          {
+            "description": "Filter to one dataset",
+            "in": "query",
+            "name": "dataset",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one dataset",
+              "title": "Dataset"
+            }
+          },
+          {
+            "description": "Filter to one medallion layer",
+            "in": "query",
+            "name": "layer",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Layer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one medallion layer",
+              "title": "Layer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "blocked_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Blocked Only",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Rows to return",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Rows to return",
+              "title": "Limit"
+            }
+          },
+          {
+            "description": "Rows to skip",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Rows to skip",
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Decisions Gate Decisions Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Every gate decision, newest first",
+        "tags": [
+          "gate"
+        ]
+      }
+    },
+    "/gate/overrides": {
+      "get": {
+        "description": "A gate nobody can override is a gate that gets disabled the first time it is\nwrong at an inconvenient moment. An override is therefore permitted and\nrecorded -- and this endpoint exists so that \"how often is the gate overridden\"\nis a question with an answer.",
+        "operationId": "overrides_gate_overrides_get",
+        "parameters": [
+          {
+            "description": "Rows to return",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Rows to return",
+              "title": "Limit"
+            }
+          },
+          {
+            "description": "Rows to skip",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Rows to skip",
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Overrides Gate Overrides Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Decisions that were overridden",
+        "tags": [
+          "gate"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Health Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Process liveness",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/ingestion/batches": {
+      "get": {
+        "description": "``seen_count`` above 1 is the exactly-once guarantee working, not an error.\n\nA batch whose content digest has been presented several times was ingested once\nand skipped thereafter. Surfacing the count makes redelivery visible instead of\nsilent, which matters because silent redelivery and silent data loss look\nidentical from a row count.",
+        "operationId": "batches_ingestion_batches_get",
+        "parameters": [
+          {
+            "description": "Filter to one tenant",
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Tenant"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one tenant",
+              "title": "Tenant"
+            }
+          },
+          {
+            "description": "Filter to one dataset",
+            "in": "query",
+            "name": "dataset",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one dataset",
+              "title": "Dataset"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "description": "Rows to return",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Rows to return",
+              "title": "Limit"
+            }
+          },
+          {
+            "description": "Rows to skip",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Rows to skip",
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Batches Ingestion Batches Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Ingest batches and their deduplication state",
+        "tags": [
+          "ingestion"
+        ]
+      }
+    },
+    "/ingestion/summary": {
+      "get": {
+        "operationId": "summary_ingestion_summary_get",
+        "parameters": [
+          {
+            "description": "Filter to one tenant",
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Tenant"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one tenant",
+              "title": "Tenant"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Summary Ingestion Summary Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Rows and bytes ingested per tenant and dataset",
+        "tags": [
+          "ingestion"
+        ]
+      }
+    },
+    "/ingestion/watermarks": {
+      "get": {
+        "description": "``watermark_kind`` is returned because the value alone is ambiguous.\n\nAn LSN, a timestamp and a file sequence are all opaque strings in this column,\nand comparing two of different kinds is meaningless -- which is why the kind is\na discriminator on the row rather than something a client infers from the shape.",
+        "operationId": "watermarks_ingestion_watermarks_get",
+        "parameters": [
+          {
+            "description": "Filter to one tenant",
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Tenant"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one tenant",
+              "title": "Tenant"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Watermarks Ingestion Watermarks Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Current watermark per source and dataset",
+        "tags": [
+          "ingestion"
+        ]
+      }
+    },
+    "/lineage/entries": {
+      "get": {
+        "description": "``payload``, ``signature`` and ``public_key_pem`` are omitted here.\n\nThe payload names source paths, transformation parameters and record counts for\na tenant's data. Reading it is an audit action, so it is behind the auditor role\non the single-entry endpoint rather than returned fifty at a time by a list.",
+        "operationId": "entries_lineage_entries_get",
+        "parameters": [
+          {
+            "description": "Filter to one tenant",
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Tenant"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one tenant",
+              "title": "Tenant"
+            }
+          },
+          {
+            "description": "Filter to one dataset",
+            "in": "query",
+            "name": "dataset",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one dataset",
+              "title": "Dataset"
+            }
+          },
+          {
+            "description": "Filter to one medallion layer",
+            "in": "query",
+            "name": "layer",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Layer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one medallion layer",
+              "title": "Layer"
+            }
+          },
+          {
+            "description": "Rows to return",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Rows to return",
+              "title": "Limit"
+            }
+          },
+          {
+            "description": "Rows to skip",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Rows to skip",
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Entries Lineage Entries Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Chain entries without payloads",
+        "tags": [
+          "lineage"
+        ]
+      }
+    },
+    "/lineage/entries/{seq}": {
+      "get": {
+        "description": "Auditor-only, and returns the material needed to verify the entry offline.\n\n``payload``, ``signature`` and ``public_key_pem`` together let a third party\nrecompute the digest and check the signature without trusting this API -- which\nis what makes the lineage claim verifiable rather than merely asserted.",
+        "operationId": "entry_lineage_entries__seq__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "seq",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "title": "Seq",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Entry Lineage Entries  Seq  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "One entry, with its signed payload and public key",
+        "tags": [
+          "lineage"
+        ]
+      }
+    },
+    "/lineage/head": {
+      "get": {
+        "description": "The head digest commits to every entry before it.\n\nAn external party who records this value can later detect any edit to any\nearlier entry -- which is the entire point of chaining, and the reason it is\nviewer-readable while the payloads are not.",
+        "operationId": "head_lineage_head_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Head Lineage Head Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "The tip of the chain",
+        "tags": [
+          "lineage"
+        ]
+      }
+    },
+    "/lineage/latest": {
+      "get": {
+        "operationId": "latest_lineage_latest_get",
+        "parameters": [
+          {
+            "description": "Filter to one tenant",
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Tenant"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one tenant",
+              "title": "Tenant"
+            }
+          },
+          {
+            "description": "Filter to one medallion layer",
+            "in": "query",
+            "name": "layer",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Layer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one medallion layer",
+              "title": "Layer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Latest Lineage Latest Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Latest entry per dataset",
+        "tags": [
+          "lineage"
+        ]
+      }
+    },
+    "/lineage/verify": {
+      "get": {
+        "description": "Shallow verification: links, signatures, and column-versus-payload agreement.\n\n``deep`` is absent by design, not by omission -- see the module docstring. The\nresponse says so explicitly so that a caller cannot read a passing result as\nproof the lake still matches its signed roots. It does not.",
+        "operationId": "verify_chain_endpoint_lineage_verify_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Verify Chain Endpoint Lineage Verify Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Re-derive every link and signature",
+        "tags": [
+          "lineage"
+        ]
+      }
+    },
+    "/marts": {
+      "get": {
+        "description": "Row counts come from ``count(*)`` per table, not from ``reltuples``.\n\n``pg_class.reltuples`` is an estimate maintained by ANALYZE, and these tables\nare dropped and recreated on every publish -- so the estimate is frequently -1\nor stale by a whole run. There are six marts of a few thousand rows; an exact\ncount is cheap and a wrong one is confusing.",
+        "operationId": "list_marts_marts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Marts Marts Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Published marts, with their disclosure record",
+        "tags": [
+          "marts"
+        ]
+      }
+    },
+    "/marts/{name}": {
+      "get": {
+        "description": "No ORDER BY.\n\nMart schemas differ and are not known at write time, so there is no column this\nrouter could order by that is guaranteed to exist. An unordered paged read is\nhonest about that; inventing an order from the first column would produce pages\nthat shift under the client when the mart is republished. Clients that need a\nstable order should fetch the mart whole -- they are thousands of rows, not\nmillions -- or sort client-side.",
+        "operationId": "read_mart_marts__name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "maxLength": 63,
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Rows to return",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Rows to return",
+              "title": "Limit"
+            }
+          },
+          {
+            "description": "Rows to skip",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Rows to skip",
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Read Mart Marts  Name  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Rows of one mart",
+        "tags": [
+          "marts"
+        ]
+      }
+    },
+    "/marts/{name}/schema": {
+      "get": {
+        "operationId": "mart_schema_marts__name__schema_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "maxLength": 63,
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Mart Schema Marts  Name  Schema Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Columns of one mart",
+        "tags": [
+          "marts"
+        ]
+      }
+    },
+    "/meta": {
+      "get": {
+        "description": "Unauthenticated on purpose, and therefore carries no operational data.\n\n``tee`` is here because every confidentiality claim this platform makes is\nconditional on it. Under the ``sim`` backend the enclave is *modelled*, and a\ndashboard that renders \"attested\" without qualification would be making a claim\nthe platform cannot support. The label is served from the same setting the\npipeline uses, so the two cannot drift.",
+        "operationId": "meta_meta_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Meta Meta Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "What this deployment is, and what it is not",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/quality/failures": {
+      "get": {
+        "description": "Joined to ``dq_rule`` so a failure arrives with its description and severity.\n\nWithout the join a client gets ``rule_id`` and a pass rate, and has to fetch the\ncatalogue to render anything -- which every client would then do on every poll.",
+        "operationId": "failures_quality_failures_get",
+        "parameters": [
+          {
+            "description": "Filter to one tenant",
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Tenant"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one tenant",
+              "title": "Tenant"
+            }
+          },
+          {
+            "description": "Filter to one dataset",
+            "in": "query",
+            "name": "dataset",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one dataset",
+              "title": "Dataset"
+            }
+          },
+          {
+            "description": "Filter to one medallion layer",
+            "in": "query",
+            "name": "layer",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Layer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one medallion layer",
+              "title": "Layer"
+            }
+          },
+          {
+            "description": "Rows to return",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Rows to return",
+              "title": "Limit"
+            }
+          },
+          {
+            "description": "Rows to skip",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Rows to skip",
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Failures Quality Failures Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Rules that failed, worst first",
+        "tags": [
+          "quality"
+        ]
+      }
+    },
+    "/quality/freshness": {
+      "get": {
+        "operationId": "freshness_quality_freshness_get",
+        "parameters": [
+          {
+            "description": "Filter to one tenant",
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Tenant"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one tenant",
+              "title": "Tenant"
+            }
+          },
+          {
+            "in": "query",
+            "name": "breached_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Breached Only",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Freshness Quality Freshness Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Lag against the freshness SLA",
+        "tags": [
+          "quality"
+        ]
+      }
+    },
+    "/quality/quarantine": {
+      "get": {
+        "description": "``redacted_record`` is not selected here. See ``/quarantine/{id}``.",
+        "operationId": "quarantine_quality_quarantine_get",
+        "parameters": [
+          {
+            "description": "Filter to one tenant",
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Tenant"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one tenant",
+              "title": "Tenant"
+            }
+          },
+          {
+            "description": "Filter to one dataset",
+            "in": "query",
+            "name": "dataset",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one dataset",
+              "title": "Dataset"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reason_code",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reason Code"
+            }
+          },
+          {
+            "description": "Rows to return",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Rows to return",
+              "title": "Limit"
+            }
+          },
+          {
+            "description": "Rows to skip",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Rows to skip",
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Quarantine Quality Quarantine Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Quarantined rows: reasons only",
+        "tags": [
+          "quality"
+        ]
+      }
+    },
+    "/quality/quarantine/summary": {
+      "get": {
+        "operationId": "quarantine_summary_quality_quarantine_summary_get",
+        "parameters": [
+          {
+            "description": "Filter to one tenant",
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Tenant"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one tenant",
+              "title": "Tenant"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Quarantine Summary Quality Quarantine Summary Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Quarantine counts by reason",
+        "tags": [
+          "quality"
+        ]
+      }
+    },
+    "/quality/quarantine/{quarantine_id}": {
+      "get": {
+        "description": "Auditor-only.\n\n``redacted_record`` had its sensitive fields removed when it was written, which\nis not the same as being safe to show anyone: it is still a real row from a real\ntenant, and the reason it is here is that something about it was wrong.",
+        "operationId": "quarantine_record_quality_quarantine__quarantine_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "quarantine_id",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "title": "Quarantine Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Quarantine Record Quality Quarantine  Quarantine Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "One quarantined row, including its redacted contents",
+        "tags": [
+          "quality"
+        ]
+      }
+    },
+    "/quality/rules": {
+      "get": {
+        "operationId": "rules_quality_rules_get",
+        "parameters": [
+          {
+            "description": "Filter to one tenant",
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Tenant"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one tenant",
+              "title": "Tenant"
+            }
+          },
+          {
+            "description": "Filter to one dataset",
+            "in": "query",
+            "name": "dataset",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one dataset",
+              "title": "Dataset"
+            }
+          },
+          {
+            "in": "query",
+            "name": "dimension",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Dimension"
+            }
+          },
+          {
+            "in": "query",
+            "name": "severity",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Severity"
+            }
+          },
+          {
+            "in": "query",
+            "name": "active_only",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Active Only",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Rows to return",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Rows to return",
+              "title": "Limit"
+            }
+          },
+          {
+            "description": "Rows to skip",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Rows to skip",
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Rules Quality Rules Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "The rule catalogue",
+        "tags": [
+          "quality"
+        ]
+      }
+    },
+    "/quality/scores": {
+      "get": {
+        "operationId": "scores_quality_scores_get",
+        "parameters": [
+          {
+            "description": "Filter to one tenant",
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Tenant"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one tenant",
+              "title": "Tenant"
+            }
+          },
+          {
+            "description": "Filter to one dataset",
+            "in": "query",
+            "name": "dataset",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one dataset",
+              "title": "Dataset"
+            }
+          },
+          {
+            "description": "Filter to one medallion layer",
+            "in": "query",
+            "name": "layer",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Layer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one medallion layer",
+              "title": "Layer"
+            }
+          },
+          {
+            "description": "Rows to return",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Rows to return",
+              "title": "Limit"
+            }
+          },
+          {
+            "description": "Rows to skip",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Rows to skip",
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Scores Quality Scores Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Dimension scores per dataset run",
+        "tags": [
+          "quality"
+        ]
+      }
+    },
+    "/quality/scores/latest": {
+      "get": {
+        "description": "One row per (tenant, dataset, layer), chosen by ``DISTINCT ON``.\n\nPostgres-specific and deliberately so: the portable alternative is a window\nfunction over the whole table or a correlated subquery, and this table is\nwritten once per pipeline run forever. ``DISTINCT ON`` reads the index.",
+        "operationId": "latest_scores_quality_scores_latest_get",
+        "parameters": [
+          {
+            "description": "Filter to one tenant",
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Tenant"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one tenant",
+              "title": "Tenant"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Latest Scores Quality Scores Latest Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "The most recent score per dataset",
+        "tags": [
+          "quality"
+        ]
+      }
+    },
+    "/ready": {
+      "get": {
+        "description": "503 with a body, not an exception, so the body is machine-readable either way.",
+        "operationId": "ready_ready_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Ready Ready Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Dependency readiness",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/runs": {
+      "get": {
+        "description": "Newest first. ``error_message`` is deliberately omitted from the list.\n\nA failure message can carry a fragment of the offending record -- a malformed\nrow echoed back by a driver, for instance -- and the list endpoint is the one a\ndashboard polls. It is available on the single-run endpoint, where fetching it\nis a deliberate act.",
+        "operationId": "list_runs_runs_get",
+        "parameters": [
+          {
+            "description": "Filter to one tenant",
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Tenant"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one tenant",
+              "title": "Tenant"
+            }
+          },
+          {
+            "description": "Filter to one dataset",
+            "in": "query",
+            "name": "dataset",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one dataset",
+              "title": "Dataset"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "run_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Run Type"
+            }
+          },
+          {
+            "description": "Rows to return",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Rows to return",
+              "title": "Limit"
+            }
+          },
+          {
+            "description": "Rows to skip",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Rows to skip",
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Runs Runs Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Recent pipeline runs",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/runs/stats": {
+      "get": {
+        "description": "Aggregated in SQL, not in Python.\n\nThe alternative -- fetching runs and grouping them here -- would put a second\ndefinition of \"failed\" in the codebase and would page 621 rows over the wire to\nproduce six numbers.",
+        "operationId": "run_stats_runs_stats_get",
+        "parameters": [
+          {
+            "description": "Filter to one tenant",
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Tenant"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one tenant",
+              "title": "Tenant"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Run Stats Runs Stats Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Run counts and durations by status",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/runs/{run_id}": {
+      "get": {
+        "operationId": "get_run_runs__run_id__get",
+        "parameters": [
+          {
+            "description": "Run UUID",
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "description": "Run UUID",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Run Runs  Run Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "One run, including its error message",
+        "tags": [
+          "runs"
+        ]
+      }
+    }
+  }
+}

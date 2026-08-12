@@ -43,6 +43,7 @@ step "plan/rule coverage"     python scripts/check_plan_rule_coverage.py
 step "DAG/CLI contract"       python scripts/check_dag_cli_contract.py
 step "key material handling"  python scripts/check_key_material_handling.py
 step "declared dependencies"  python scripts/check_declared_dependencies.py
+step "openapi schema"         python scripts/export_openapi.py --check
 
 echo
 echo "======== generator determinism (CI job) ========"
@@ -79,6 +80,9 @@ if [[ ${#failed[@]} -eq 0 ]]; then
     echo "  streaming claims       scripts/verify_streaming.sh   (needs Kafka)"
     echo "  lineage tamper claims  scripts/verify_lineage.sh"
     echo "  DAG execution + gate   scripts/verify_dags.sh        (needs Airflow)"
+    # tests/api proves the SQL is valid against an empty schema; this proves the
+    # service actually serves, against data.
+    echo "  serving layer + RBAC   scripts/verify_api.sh         (needs a populated DB)"
     exit 0
 fi
 printf 'FAILED: %s\n' "${failed[@]}"

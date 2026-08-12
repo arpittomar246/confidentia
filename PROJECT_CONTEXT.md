@@ -202,20 +202,26 @@ and are not meant to.
 │   ├── evaluation/{ground_truth,detections,scoring,runner}.py  665  Stage 7b harness
 │   ├── streaming/{producer,consumer,watermark}.py  588  Stage 9 Kafka path
 │   ├── lineage/{merkle,chain,recorder,verify}.py  1,421  Stage 9b, C3
+│   ├── api/{app,security,deps,errors}.py + routers/  1,832  Stage 10 serving layer
 │   ├── spark/session.py          272  Session builder, PME wiring, column_keys_for_frame
 │   └── store/{db,migrations,repositories}.py + sql/  612 + 10 migrations
 ├── orchestration/dags/           6 DAGs + confidentia_common.py   Stages 8-9b
-├── tests/  (conftest + 12 unit + 1 integration)  263 tests
+├── tests/  (conftest + 12 unit + 1 integration + 2 api)  333 tests
 ├── scripts/  (operational scripts, see §9)
-├── docs/adr/ (10 ADRs)  docs/stage-reports/ (12 reports)
+├── docs/adr/ (11 ADRs)  docs/stage-reports/ (13 reports)
+├── docs/api/openapi.json         Committed schema; CI fails if stale
 ├── spikes/pme/                   Stage 1 feasibility spike (still runnable, used by CI)
-├── .github/workflows/ci.yml      10 jobs
-├── docker-compose.yml            5 profiles (CI-validated, not used locally)
+├── .github/workflows/ci.yml      11 jobs
+├── docker-compose.yml            5 profiles (syntax-validated only; Dockerfiles missing)
 └── pyproject.toml
 
-EMPTY (not yet built): backend/ frontend/ monitoring/ infrastructure/
+EMPTY (not yet built): backend/ frontend/ docker/ monitoring/ infrastructure/
                        orchestration/plugins/
                        src/confidentia/{benchmarks,tee}/
+
+`backend/` stays empty: the serving layer lives in `src/confidentia/api/` so it is
+covered by mypy's `files = ["src"]` and importable in tests without path handling.
+Only `docker/backend/Dockerfile` keeps the old name.
 
 `evaluation/` is NOT a pipeline package. It is the only place besides
 generators/writers.py allowed near the ground-truth answer key, and it reaches it
@@ -313,10 +319,49 @@ deduplicates, and it is why Bronze uniqueness is evaluated **per source system**
 
 ## 7. APIs
 
-**There is no backend API yet.** `backend/` is empty. Stage 10.
+### The serving layer (Stage 10) — `src/confidentia/api/`
 
-The only HTTP service is **`src/confidentia/ingestion/source_api.py`** — a *mock
-source system*, not part of the platform:
+**36 read-only endpoints** over `platform.*` and `gold.*`. Reads PostgreSQL, never
+the lake (`delta-rs` cannot decrypt PME). Computes no metrics of its own, holds no
+key material, is not in `MEASURED_PACKAGES`, and cannot trigger a pipeline run —
+ADR 0016 for all four boundaries.
+
+Placed under `src/`, **not** in top-level `backend/`, which remains empty. It
+imports `store.db` and `config.settings` so it cannot ship separately; inside `src/`
+it gets mypy, coverage and clean test imports for free.
+
+| Router | Endpoints | Role |
+|---|---|---|
+| `/health`, `/ready`, `/meta` | 3 | public |
+| `/runs` | 3 | viewer |
+| `/quality` | 8 | viewer / operator / auditor |
+| `/evaluation` | 3 | viewer |
+| `/gate` | 3 | viewer / operator |
+| `/ingestion` | 3 | operator |
+| `/lineage` | 5 | viewer / operator / auditor |
+| `/audit` | 5 | operator / auditor |
+| `/marts` | 3 | viewer |
+
+Auth: bearer token. `AUTH_MODE=oidc` verifies RS256/ES256 against a JWKS with `iss`
+and `aud` checked and the algorithm list **asymmetric-only** (algorithm confusion);
+`AUTH_MODE=local` verifies HS256 tokens from `confidentia api token` and is refused
+outside `CONFIDENTIA_ENV=local`. Roles form a disclosure ladder
+`viewer < operator < auditor`. No user table, no passwords.
+
+OpenAPI schema committed at `docs/api/openapi.json`; CI job `openapi-schema` fails
+if it is stale.
+
+```bash
+confidentia api serve              # http://127.0.0.1:8000/docs
+confidentia api token me --role auditor
+confidentia api routes             # every route and the role it needs
+bash scripts/verify_api.sh         # live verification, needs a populated DB
+```
+
+### The mock source system (Stage 3)
+
+**`src/confidentia/ingestion/source_api.py`** — a *source to ingest from*, not part
+of the platform:
 
 | Endpoint | Purpose |
 |---|---|
@@ -607,6 +652,26 @@ touched this data". `streaming/` is listed before it exists, because the failure
 mode of remembering later is a consumer writing encrypted Delta from unattested
 code, which nothing would report.
 
+The API is deliberately **not** in that list. It reads Postgres and never touches
+plaintext under released keys, so adding it would mean editing a route revokes
+every attestation policy entry — coupling presentation to the confidentiality
+mechanism for nothing (ADR 0016).
+
+### The API (Stage 10)
+
+```bash
+confidentia api serve                     # http://127.0.0.1:8000/docs
+confidentia api serve --port 8077 --reload
+confidentia api token me --role auditor   # local mode only; refuses under OIDC
+confidentia api routes                    # every route + the role it enforces
+python scripts/export_openapi.py          # rewrite docs/api/openapi.json
+python scripts/export_openapi.py --check  # what CI runs
+bash scripts/verify_api.sh                # live HTTP verification, needs data
+```
+
+`api serve` binds `127.0.0.1` by default. The compose service sets
+`API_HOST=0.0.0.0` because it is inside a container; do not set that on the host.
+
 ### Scripts
 
 | Script | Purpose |
@@ -664,12 +729,17 @@ For the UI: `airflow scheduler` and `airflow webserver --port 8080` in separate
 shells, **both with the passphrase in their environment** — `BashOperator`
 inherits it, and the platform has no fallback for it anywhere.
 
-### CI — 10 jobs, all green
+### CI — 11 jobs, all green
 
 `lint` (ruff + mypy) · `unit-tests` · **`integration-tests`** ·
 `ground-truth-isolation` · `plan-rule-coverage` · `dag-cli-contract` ·
-`declared-dependencies` · `encryption-guarantee` · `generator-determinism` ·
-`compose-validate`
+`declared-dependencies` · **`openapi-schema`** · `encryption-guarantee` ·
+`generator-determinism` · `compose-validate`
+
+`compose-validate` asserts less than its name suggests: `docker compose config`
+checks syntax and interpolation only, so it passes even though
+`docker/{backend,frontend,spark,airflow}/Dockerfile` do not exist. Those are
+Stage 13; until then no compose profile can actually be built.
 
 `integration-tests` runs against a `postgres:18` service container and applies all
 migrations to an **empty** database first. That last part is the point: the tests
@@ -925,6 +995,28 @@ All of these are real findings or accepted costs. **None is an artefact.**
 - pandas 3.0.5 / numpy 2.1.3 installed; `pyproject` pins `numpy<2.2`, `pandas>=2.2`.
   Tests pass but the pin is looser than the installed reality.
 
+### Serving layer (Stage 10)
+- **No Dockerfile exists for any compose service.** `docker/{backend,frontend,spark,
+  airflow}/Dockerfile` are all missing, so no profile can be built. The
+  `compose-validate` CI job passes anyway because `docker compose config` validates
+  syntax and interpolation only — it is a weaker check than its name implies.
+  Stage 13.
+- **No identity provider has been integrated.** The OIDC path is tested against a
+  locally generated RSA keypair with an injected JWKS lookup, which does exercise
+  signature verification, the `iss`/`aud` checks and the asymmetric-only algorithm
+  restriction. It has never spoken to Entra, Keycloak or Auth0.
+- **No rate limiting.** `/health` and `/ready` are unauthenticated, and `/ready`
+  takes a pooled connection on every call.
+- **`/marts/{name}` has no `ORDER BY`.** Mart schemas are inferred at publish time
+  and differ, so no column is guaranteed to exist. Pages can shift under a client if
+  a mart is republished mid-scroll. The fix is a stable sort key in `MartSpec`,
+  which is a Gold change.
+- **`argon2-cffi` is declared and unused.** There is no password path anywhere and
+  there must not be; the dependency predates the decision.
+- `/quality/quarantine` is the slowest endpoint at ~22 ms p50 against 30,951 rows.
+  No index added — the plan has not been read, and guessing at one is how useless
+  indexes get committed.
+
 ---
 
 ## 12. Completed vs pending
@@ -945,102 +1037,120 @@ All of these are real findings or accepted costs. **None is an artefact.**
 | 8 | Airflow: 5 DAGs, the promotion gate, attestation preflight | `ff95d1e` |
 | 8+ | Attested boundary widened, integration tests in CI, keystore backup | `f63b5c3` |
 | 9 | Streaming: Kafka -> the shared Bronze table, exactly-once | `317c7e3` |
-| 9b | **C3** — signed, Merkle-chained provenance; 4 tamper claims verified | *this session* |
+| 9b | **C3** — signed, Merkle-chained provenance; 4 tamper claims verified | `a7b48b1` |
+| 10 | Serving layer: 36 read-only endpoints, JWT auth, 3-role ladder, OpenAPI | *this session* |
 
 ### Pending
 
 | Stage | Deliverable | Est. sessions |
 |---|---|---|
-| **10** | **FastAPI backend, native OIDC auth, RBAC, ~40 endpoints** | **2** |
-| 11 | React/TS dashboard, 9 modules | 3–4 |
+| **11** | **React/TS dashboard, 9 modules** | **3–4** |
 | 12 | Prometheus/Grafana/OTel | 1 |
 | 13–16 | Docker, CI/CD, Terraform + Azure architecture | 1–2 |
 | — | **C5** — enclave placement planner | 1 |
 | — | Experiments E1–E8 with graphs | 2 |
 | — | Final report, PPT, demo script, viva Q&A | 2 |
 
-**Total remaining: ~11–15 sessions.** Four of the five contributions are done; only
-C5 remains, and it is the smallest.
+**Total remaining: ~9–13 sessions.** Four of the five contributions are done; only
+C5 remains, and it is the smallest. Stage 11 is the largest remaining block and the
+most cuttable — the platform and every contribution stand without it.
 
 ---
 
-## 13. Exact next steps — Stage 10 (serving layer)
+## 13. Exact next steps — Stage 11 (the dashboard)
 
-**Goal:** a FastAPI backend over what the platform already produces. With C1–C4
-done, the remaining risk in this project is not cryptographic; it is that nothing
-outside the CLI can read any of it.
+**Goal:** a React/TypeScript dashboard over the Stage 10 API. Nothing else is
+blocked on it, and it is the largest and most cuttable block remaining — so it is
+next because the four contributions and the platform are done, not because it is
+load-bearing.
 
-### Why this is next rather than C5
+### Start here
 
-C5 (the enclave placement planner) is a modelling exercise on top of numbers the
-platform already produces. The backend is the thing every remaining stage depends
-on: the dashboard (Stage 11) has nothing to render without it, the monitoring stage
-(12) wants the same metrics endpoints, and the experiments want a way to drive the
-platform that is not a shell loop.
+`docs/api/openapi.json` is committed and CI keeps it current. Generate the client
+from it (`openapi-typescript` + a thin fetch wrapper, or `orval`); do not hand-write
+request types. A route or response shape that changes shows up as a type error.
 
-### The constraint that shapes the whole design
+`confidentia api routes` prints every path with the role it needs — that listing is
+the navigation map, and it is read from the real dependency tree.
 
-**`delta-rs` cannot read encrypted Parquet.** A Python API process without a JVM
-cannot query Bronze, Silver or Gold Delta at all — this is why Gold publishes
-disclosure-controlled aggregates into the `gold` schema in Postgres, and it was
-decided at Stage 6 for exactly this reason.
+### The nine modules, and what each reads
 
-So the backend reads **Postgres**, not the lake. Every endpoint is a query against
-`platform.*` or `gold.*`. An endpoint that needs a Spark session is an endpoint that
-belongs in the CLI.
+| Module | Endpoints | Minimum role |
+|---|---|---|
+| Overview | `/meta`, `/runs/stats`, `/quality/scores/latest`, `/gate/blocked` | viewer |
+| Pipeline runs | `/runs`, `/runs/{id}` | viewer |
+| Data quality | `/quality/scores`, `/rules`, `/failures`, `/freshness` | viewer |
+| Evaluation | `/evaluation/latest`, `/summary`, `/coverage` | viewer |
+| Promotion gate | `/gate/blocked`, `/decisions`, `/overrides` | viewer / operator |
+| Marts | `/marts`, `/marts/{name}`, `/marts/{name}/schema` | viewer |
+| Ingestion | `/ingestion/batches`, `/watermarks`, `/summary` | operator |
+| Lineage | `/lineage/head`, `/latest`, `/entries`, `/verify`, `/entries/{seq}` | operator / auditor |
+| Audit | `/audit/key-releases`, `/attestation-policy`, `/disclosure`, `/restatements` | auditor |
 
-### What there is to serve, all of it already in Postgres
+A 403 is a normal response for a viewer, not an error state. Render the module with
+an explanation of which role it needs; do not show a broken panel or a toast.
 
-| Source | Endpoint family |
-|---|---|
-| `platform.run_summary` | pipeline runs, durations, failures |
-| `platform.dq_score`, `dq_rule`, `dq_detection` | quality scores and detections |
-| `platform.dq_evaluation_latest` | P/R/F1 against the answer key (7b) |
-| `platform.promotion_gate`, `promotion_blocked_now` | what the gate stopped and why |
-| `platform.key_release_audit` | grants and the four refusal paths |
-| `platform.lineage_entry`, `lineage_latest` | the provenance chain (9b) |
-| `platform.ingest_batch`, `ingest_file`, `watermark` | ingestion state |
-| `gold.*` | the disclosure-controlled marts |
+### Five things the UI must render honestly
+
+These are not styling notes. Each is a claim the platform is careful about, and a
+dashboard is where careful claims get flattened into a green tick.
+
+1. **`/meta` returns `tee.label`.** Under the `sim` backend it is `MODELLED`. The
+   word "attested" must not appear anywhere in the UI without that qualifier
+   visible in the same view.
+2. **A NULL in a mart is usually suppression, not missing data.** `/marts` payloads
+   carry `note` saying so. Render blanked cells as *suppressed*, never as `0`, `—`
+   meaning absent, or an interpolated value.
+3. **`/evaluation/latest` rows carry `rule_exists`.** A family with no rule is not a
+   bad score; it is an uncovered family. Show it as its own state.
+4. **`/evaluation/latest` carries a `caveats` array.** The `duplicate_record` family
+   at Bronze is contaminated by redelivery. Attach the caveat to the number, not to
+   a footnote at the bottom of the page.
+5. **`/lineage/verify` returns `scope.lake_contents_rehashed: false`.** A green
+   "lineage verified" badge that does not say what was *not* checked is a lie by
+   omission. Deep verification is CLI-only (ADR 0016).
 
 ### Design questions to settle first
 
-1. **Auth.** The brief says native OIDC and RBAC. The honest scope here is one
-   identity provider and three roles (viewer / operator / auditor), with the role
-   deciding whether an endpoint can *trigger* anything. Do not build a user table
-   with passwords; this project has enough real cryptography without inventing
-   credential storage.
-2. **Whether the API may trigger pipeline runs.** It is tempting and it is a second
-   orchestrator. Airflow already owns scheduling, retries and the gate; an API that
-   can start a Bronze write is an API that can start one *while Airflow is running
-   one*, and `max_active_runs=1` is a per-DAG guarantee, not a per-machine one.
-   Prefer triggering the Airflow DAG over invoking the CLI.
-3. **What `lineage verify --deep` looks like over HTTP.** It takes minutes and holds
-   a Spark session. Either it is not exposed, or it is a job whose result is polled
-   — not a request that blocks a worker for four minutes.
+1. **Where the token lives.** `localStorage` is XSS-exfiltratable; in-memory means a
+   refresh logs the user out. For a dev-mode dashboard against `AUTH_MODE=local`,
+   in-memory plus a paste-the-token screen is honest and has no failure mode worth
+   engineering around. Do not build a login form against a user table — there isn't
+   one, and there must not be.
+2. **Polling or not.** There is no websocket and no SSE endpoint. Interval polling
+   on the Overview module only, and manual refresh elsewhere, is the cheap answer;
+   anything more wants an endpoint that does not exist yet.
+3. **How much charting.** Recharts is enough for scores over time and the confusion
+   matrix. Resist a chart library that ships a bundle bigger than the platform.
+
+### Constraints that will bite
+
+- **`frontend/` must not be inside OneDrive** — the same rule as `data_root`, for
+  the same reason: `node_modules` is tens of thousands of small files and OneDrive
+  will sync-scan every one. The repo already lives in WSL2, which is correct; keep
+  `npm install` there and never run it from a Windows path.
+- **Node is not installed** in the WSL distro yet. It is not in `bootstrap_wsl.sh`.
+- **Vite's dev server is already whitelisted** in `api.cors_origins`
+  (`http://localhost:5173`, `http://127.0.0.1:5173`). `allow_credentials` is False
+  and the API authenticates by header, so do not reach for cookies.
+- **7.4 GB of RAM.** A Vite dev server plus the API plus Postgres is fine; a Vite
+  dev server plus Spark is not. Do not expect to run a pipeline and the dashboard
+  at once.
 
 ### Deliverables
 
-- `backend/` — FastAPI app, routers per family above, Pydantic response models
-- OIDC middleware + RBAC dependency, with the role checked per route
-- `/health`, `/ready` separating "process is up" from "Postgres answers"
-- OpenAPI schema committed, so the dashboard can generate its client
-- Integration tests against the real Postgres, in the CI job that already has one
-- `docs/adr/0016-serving-layer-boundaries.md` — the delta-rs constraint, and what
-  the API is not allowed to do
+- `frontend/` — Vite + React + TypeScript, generated API client, nine modules
+- Role-aware navigation driven by the roles in the token
+- `docker/frontend/Dockerfile` (Stage 13 also needs `docker/backend/Dockerfile`)
+- `docs/stage-reports/stage-11.md`
 
-### Watch out for
+### Do not
 
-1. **Do not add a second source of truth.** Every number the API returns must come
-   from a table or view the pipeline already writes. A metric computed in the API
-   layer is a metric the CLI and the dashboard will eventually disagree about —
-   which is exactly why `promotion_blocked_now` is a view rather than a query in
-   `gate.py`.
-2. **The API must never hold key material.** It reads Postgres; it does not attest,
-   does not request keys, and is not in `MEASURED_PACKAGES`. If an endpoint needs a
-   DEK, the design is wrong.
-3. **Row counts in `gold.*` are already suppressed** (C4). Do not "fix" a NULL cell
-   that looks like missing data — complementary suppression put it there, and
-   restoring it would make a suppressed value recoverable by subtraction.
+- Compute a metric client-side that the API could return. The API already refuses to
+  do this (ADR 0016) and the reason is the same one rung down: a number the
+  dashboard derives is a number that will disagree with the CLI.
+- Add a write path. The API refuses non-GET with `405 read_only`; a UI button that
+  posts is a UI button that produces an error dialog.
 
 ---
 
