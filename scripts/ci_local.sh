@@ -68,8 +68,17 @@ echo
 echo "=================================================="
 if [[ ${#failed[@]} -eq 0 ]]; then
     echo "all local CI checks passed"
-    echo "not covered here: encryption-guarantee (scripts/verify_encryption.sh),"
-    echo "                  compose-validate (needs Docker)"
+    echo "not run here, but CI does run them:"
+    echo "  encryption-guarantee   scripts/verify_encryption.sh"
+    echo "  compose-validate       needs Docker"
+    # These verify the project's headline claims and run nowhere automatically:
+    # each needs a populated lake and the keystore, which neither this script nor
+    # CI has. Naming them is the point -- a footer listing only the CI-covered
+    # gaps implies these are covered somewhere, and they are not.
+    echo "run by hand after a rebuild -- automated nowhere:"
+    echo "  streaming claims       scripts/verify_streaming.sh   (needs Kafka)"
+    echo "  lineage tamper claims  scripts/verify_lineage.sh"
+    echo "  DAG execution + gate   scripts/verify_dags.sh        (needs Airflow)"
     exit 0
 fi
 printf 'FAILED: %s\n' "${failed[@]}"
