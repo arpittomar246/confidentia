@@ -1082,6 +1082,164 @@ def evaluate_report(limit: Annotated[int, typer.Option()] = 40) -> None:
         )
 
 
+lineage_app = typer.Typer(
+    help="Signed, hash-chained provenance (C3).", no_args_is_help=True
+)
+app.add_typer(lineage_app, name="lineage")
+
+
+@lineage_app.command("record")
+def lineage_record(
+    tenant: Annotated[str, typer.Argument(help="healthcare | financial")],
+    dataset: Annotated[str | None, typer.Argument(help="Dataset, or omit for all.")] = None,
+    layer: Annotated[str, typer.Option(help="bronze | silver | gold")] = "bronze",
+) -> None:
+    """Digest a table, bind it to the code and keys in force, and sign the result.
+
+    Appends one chain entry per dataset. The entry commits to a Merkle root over
+    every record; the leaves are not stored, so proving a row later re-derives
+    them from the table and only succeeds if the data still matches.
+    """
+    from confidentia.lineage.recorder import (
+        LineageTableMissingError,
+        record_dataset,
+        recordable_datasets,
+    )
+
+    names = [dataset] if dataset else recordable_datasets(tenant, layer)
+    if not names:
+        typer.echo(f"no {layer} tables for {tenant}")
+        raise typer.Exit(code=1)
+
+    for name in names:
+        try:
+            result = record_dataset(tenant, name, layer=layer)
+        except LineageTableMissingError as exc:
+            typer.echo(f"  {tenant}/{name}: skipped ({exc})")
+            continue
+        typer.echo(f"  {result.summary()}")
+        if not result.hardware_rooted:
+            # Printed every time, deliberately. The one thing this stage must not
+            # do is let a signed chain read as a stronger claim than it is.
+            typer.echo("      hardware_rooted=false: self-measured, self-signed under `sim`")
+
+
+@lineage_app.command("verify")
+def lineage_verify(
+    deep: Annotated[
+        bool,
+        typer.Option("--deep", help="Also re-digest the tables and compare to the signed roots."),
+    ] = False,
+    tenant: Annotated[str | None, typer.Option(help="Limit the deep check to one tenant.")] = None,
+) -> None:
+    """Recompute the chain, the columns and — with --deep — the data itself.
+
+    Exits non-zero when anything fails to verify, so it can be a gate rather than
+    a report.
+    """
+    from confidentia.lineage.verify import verify as verify_lineage
+
+    report = verify_lineage(deep=deep, tenants=[tenant] if tenant else None)
+    typer.echo(f"  {report.summary()}")
+    for failure in report.failures:
+        typer.echo(f"    {failure.summary()}")
+    for check in report.deep:
+        typer.echo(f"    {check.summary()}")
+    if not report.ok:
+        raise typer.Exit(code=1)
+
+
+@lineage_app.command("show")
+def lineage_show(
+    tenant: Annotated[str | None, typer.Argument()] = None,
+    dataset: Annotated[str | None, typer.Argument()] = None,
+    layer: Annotated[str | None, typer.Option(help="Filter to one layer.")] = None,
+    limit: Annotated[int, typer.Option()] = 20,
+) -> None:
+    """The chain, newest first, or one dataset's history."""
+    from confidentia.store import db as store_db
+
+    clauses: list[str] = []
+    params: list[object] = []
+    for column, value in (("tenant", tenant), ("dataset", dataset), ("layer", layer)):
+        if value:
+            clauses.append(f"{column} = %s")
+            params.append(value)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(limit)
+
+    rows = store_db.fetch_all(
+        f"""
+        SELECT seq, tenant, dataset, layer, record_count, merkle_root,
+               entry_digest, previous_digest, code_measurement, hardware_rooted,
+               recorded_at, payload
+          FROM platform.lineage_entry
+          {where}
+         ORDER BY seq DESC
+         LIMIT %s
+        """,
+        tuple(params),
+    )
+    if not rows:
+        typer.echo("no lineage entries recorded")
+        return
+
+    typer.echo(
+        f"{'seq':>5s} {'recorded':16s} {'dataset':26s} {'records':>9s} "
+        f"{'root':14s} {'entry':14s} {'code':10s} rooted"
+    )
+    for row in rows:
+        name = f"{row['tenant'][:4]}/{row['dataset'][:14]}@{row['layer'][:6]}"
+        inputs = len(row["payload"].get("inputs") or [])
+        typer.echo(
+            f"{row['seq']:>5d} {row['recorded_at']:%Y-%m-%d %H:%M} {name:26s} "
+            f"{row['record_count']:>9,} {row['merkle_root'][:12]}.. "
+            f"{row['entry_digest'][:12]}.. {row['code_measurement'][:8]}.. "
+            f"{str(row['hardware_rooted']).lower():5s} <-{inputs}"
+        )
+
+
+@lineage_app.command("prove")
+def lineage_prove(
+    tenant: Annotated[str, typer.Argument(help="healthcare | financial")],
+    dataset: Annotated[str, typer.Argument()],
+    value: Annotated[str, typer.Argument(help="The key value identifying the row.")],
+    layer: Annotated[str, typer.Option(help="bronze | silver | gold")] = "bronze",
+    column: Annotated[
+        str | None, typer.Option(help="Column to match on. Defaults to the business key.")
+    ] = None,
+) -> None:
+    """Prove one row belongs to the record set the platform signed.
+
+    The brief's claim made concrete: point at a row, get back the sibling digests
+    that rebuild a root this platform signed, plus the code measurement and key
+    IDs that were in force. An altered row cannot be proven — its digest is no
+    longer in the tree.
+    """
+    from confidentia.lineage.verify import NoCommitmentError, prove_record
+
+    try:
+        result = prove_record(tenant, dataset, layer=layer, column=column, value=value)
+    except NoCommitmentError as exc:
+        typer.echo(f"  {exc}")
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"  {result.summary()}")
+    typer.echo(f"    entry          #{result.seq}  {result.entry_digest}")
+    typer.echo(f"    signed root    {result.signed_root}")
+    typer.echo(f"    recomputed     {result.recomputed_root}")
+    if not result.root_matches:
+        typer.echo("    the table no longer hashes to the signed root: it has been changed")
+    for match in result.matches:
+        mark = "ok " if match["verified"] else "BAD"
+        typer.echo(
+            f"    [{mark}] leaf {match['leaf'][:16]}.. at index {match.get('index')} "
+            f"via {match.get('depth', 0)} siblings"
+        )
+    if not result.verified:
+        raise typer.Exit(code=1)
+
+
 @app.command("runs")
 def list_runs(
     limit: Annotated[int, typer.Option(help="How many recent runs to show.")] = 15,

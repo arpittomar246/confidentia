@@ -1,8 +1,8 @@
 # PROJECT_CONTEXT
 
 Handoff document for **CONFIDENTIA**. Written so development can continue without
-re-deriving anything. Current as of **Stage 9** (148 tracked files, 10 CI jobs
-green, 201 unit + 12 integration tests).
+re-deriving anything. Current as of **Stage 9b** (10 CI jobs green, 251 unit + 12
+integration tests, four of the five contributions delivered).
 
 ---
 
@@ -27,7 +27,7 @@ confidentiality boundary, and where in that pipeline should the boundary be draw
 |---|---|---|
 | **C1** | Crypto-partitioned medallion storage (per-column encryption keys) | **Done** (Stage 4) |
 | **C2** | Attestation-gated key release | **Done** (Stage 4) |
-| **C3** | Cryptographically verifiable lineage (signed, Merkle-chained provenance) | **Not started** — primitives exist in `common/hashing.py` |
+| **C3** | Cryptographically verifiable lineage (signed, Merkle-chained provenance) | **Done** (Stage 9b) — per-record Merkle roots, ECDSA-signed, hash-chained in Postgres |
 | **C4** | Disclosure control on Gold aggregates and DQ metrics | **Done** (Stage 6) |
 | **C5** | Enclave placement planner / EPC-aware partition sizing | **Not started** |
 
@@ -180,7 +180,7 @@ and are not meant to.
 ```
 ~/confidentia/
 ├── src/confidentia/
-│   ├── cli.py                    790  Typer CLI, all commands
+│   ├── cli.py                  1,278  Typer CLI, all commands
 │   ├── catalog/contracts.py      395  Schema contracts + sensitivity classification
 │   ├── common/
 │   │   ├── hashing.py            118  Canonical JSON, Merkle root, chain verify (C3 primitives)
@@ -200,12 +200,14 @@ and are not meant to.
 │   │   └── gold/{disclosure,star,marts,writer}.py  1,338
 │   ├── quality/{rules,scoring,runner,gate}.py  1,250  gate.py is Stage 8
 │   ├── evaluation/{ground_truth,detections,scoring,runner}.py  665  Stage 7b harness
+│   ├── streaming/{producer,consumer,watermark}.py  588  Stage 9 Kafka path
+│   ├── lineage/{merkle,chain,recorder,verify}.py  1,421  Stage 9b, C3
 │   ├── spark/session.py          272  Session builder, PME wiring, column_keys_for_frame
-│   └── store/{db,migrations,repositories}.py + sql/  612 + 9 migrations
-├── orchestration/dags/           6 DAGs + confidentia_common.py   Stages 8-9
-├── tests/  (conftest + 10 unit + 1 integration)  2,190 lines
-├── scripts/  (24 operational scripts, see §9)
-├── docs/adr/ (9 ADRs)  docs/stage-reports/ (11 reports)
+│   └── store/{db,migrations,repositories}.py + sql/  612 + 10 migrations
+├── orchestration/dags/           6 DAGs + confidentia_common.py   Stages 8-9b
+├── tests/  (conftest + 12 unit + 1 integration)  263 tests
+├── scripts/  (operational scripts, see §9)
+├── docs/adr/ (10 ADRs)  docs/stage-reports/ (12 reports)
 ├── spikes/pme/                   Stage 1 feasibility spike (still runnable, used by CI)
 ├── .github/workflows/ci.yml      10 jobs
 ├── docker-compose.yml            5 profiles (CI-validated, not used locally)
@@ -213,7 +215,7 @@ and are not meant to.
 
 EMPTY (not yet built): backend/ frontend/ monitoring/ infrastructure/
                        orchestration/plugins/
-                       src/confidentia/{streaming,benchmarks,tee,lineage}/
+                       src/confidentia/{benchmarks,tee}/
 
 `evaluation/` is NOT a pipeline package. It is the only place besides
 generators/writers.py allowed near the ground-truth answer key, and it reaches it
@@ -487,6 +489,41 @@ confirming fraud 1–45 days later is `DROPPED` by any watermark that keeps stat
 bounded — pinned as a test. That case belongs to the batch restatement path Stage 6
 built and Stage 8 schedules. Streaming handles the fresh path only.
 
+### Lineage (Stage 9b) — C3
+
+`platform.lineage_entry` holds one signed, hash-chained entry per table state. Each
+commits to a **Merkle root over every record**, bound to the code measurement, the
+released key IDs, the Delta version, the run id, and the **entry digests** of its
+upstream datasets — so a Gold mart's provenance is followed backwards through Silver
+and Bronze entries to the landing batch digests Stage 3 content-addressed.
+
+- **Per record, and it was measured.** Per-run digesting costs 27 ms, per-file 8 ms,
+  per-record 7,330 ms on the same 145k-row table — roughly 900×. Per-record is the
+  only one that can prove *one row* belongs to the committed set, which is the
+  claim. Overhead is ~37 µs/record + ~1.1 s/table: **20–32% of a Silver or Gold run,
+  and 201% of a Bronze append** (ADR 0015).
+- **Leaves are never stored.** The tree is rebuilt from the table for every proof,
+  so a proof can only be produced if the data still hashes to the signed root.
+  Proof generation *is* the tamper check.
+- **The chain is in Postgres, not the lake.** Appending needs the tip read and
+  extended in one transaction; `previous_digest` is `UNIQUE`, so the database
+  refuses a fork structurally. `run_id` is `ON DELETE SET NULL`, not `CASCADE` —
+  cascading would make `DELETE FROM platform.run` a tamper path.
+- **Only `payload` is signed.** The columns beside it are projections, and
+  verification compares them against the payload; an edit there is reported as
+  tampering rather than drift.
+
+`verify_lineage.sh` breaks four things and requires detection: an edited payload, an
+edited column, a deleted mid-chain entry, and one row changed in the real encrypted
+Bronze table (undone with Delta time travel).
+
+**What it does not establish.** Under `sim` the platform measures itself and holds
+its own signing key. The chain detects external tampering; it cannot detect a
+dishonest platform, which signs a false record and produces a valid chain. Every
+entry carries `hardware_rooted = false` and the CLI prints it on every recording.
+Two narrower limits: failures are **local**, not a cascade to the end of the chain,
+and **truncation at the tip is undetectable** without an external anchor.
+
 ---
 
 ## 9. Commands
@@ -505,6 +542,7 @@ gold build|disclosure|restatements|dirty
 quality run|rules|scores|failures|gate
 evaluate quality|report               Stage 7b: P/R/F1 vs the ground-truth answer key
 stream produce|consume|status         Stage 9: Kafka -> the shared Bronze table
+lineage record|verify|show|prove      Stage 9b: signed Merkle-chained provenance
 runs
 ```
 
@@ -589,7 +627,7 @@ code, which nothing would report.
 | `install_airflow.sh` | **8.** Airflow 2.11.2 into `~/airflow-venv` with upstream constraints, plus the separate `airflow` database. Never touches `.venv` |
 | `airflow_env.sh` | **8.** `source` it, do not run it. Every `AIRFLOW__*` key has a counterpart in docker-compose.yml so local and portable cannot drift |
 | `verify_gate.sh` | **8.** The gate's four exit statuses. Everything else about the gate would survive it printing `BLOCKED` and returning 0 |
-| `verify_dags.sh` | **8.** All five DAGs run, and an unreachable threshold fails the DAG run with Silver never executing |
+| `verify_dags.sh` | **8.** All five DAGs run, and an unreachable threshold fails the DAG run with Silver never executing. Starts the mock source API itself — without it `confidentia_ingest` fails on five connection-refused retries and reads as a broken DAG rather than a missing precondition. Slower since 9b: the lineage tasks start Spark |
 | `check_dag_cli_contract.py` | **8.** AST guard: every `cli(...)` a DAG invokes resolves against the real Typer tree. No Airflow needed |
 | `backup_keystore.sh` | **Run this.** Copies the keystore outside the data root, keeping the last 3. The keystore is the only thing in the data root that is not regenerable, and `reset_data.sh` is the realistic threat to it |
 | `simulate_ci_integration.sh` | Runs the `integration-tests` CI job's exact steps against throwaway databases, so the workflow can be verified without pushing |
@@ -597,6 +635,12 @@ code, which nothing would report.
 | `install_kafka.sh` | **9.** Kafka 3.8.0, KRaft, native. Version matches the image docker-compose.yml pins |
 | `kafka.sh start\|stop\|status\|topics\|reset` | **9.** 512 MB heap, matching the compose limit. `reset` also reformats storage |
 | `verify_streaming.sh` | **9.** One Bronze table, encrypted, and idempotent on replay — the third is the one worth having |
+| `record_all_lineage.sh` | **9b.** A chain entry per table, bottom layer first — Silver cites Bronze's entry digest, so the order is a correctness constraint |
+| `verify_lineage.sh` | **9b.** Breaks four things — a signed payload, a denormalised column, a mid-chain entry, and a row in the real encrypted table — and requires the verifier to catch each for the right reason |
+| `lineage_tamper.py` | **9b.** Used by the above. Edits a real Delta table with the column keys set, and restores it by time travel. Not underscore-prefixed because `verify_lineage.sh` depends on it — a gitignored dependency would break on a fresh clone |
+| `lineage_granularity_bench.py` | **9b.** Reproduces ADR 0015's per-run / per-file / per-record measurement |
+| `lineage_overhead.sql` | **9b.** Digest cost per record, from `platform.run` metadata |
+| `pick_business_key.py` | Prints one business-key value from a landing file. No keys, no Spark — so a demo value is independent of the machinery being demonstrated |
 
 `rebuild_pipeline.sh` encodes three orderings that are easy to get wrong by hand:
 `keys approve` after any measured-package edit; the **REST redelivery of
@@ -779,6 +823,24 @@ Full rationale in `docs/adr/`. The ones that constrain future work:
   checkpoint holding offsets into data that no longer corresponds to Bronze. Reset
   both together, or neither.
 
+### Lineage (Stage 9b)
+- **`sim` means self-measured and self-signed.** The chain detects external
+  tampering and cannot detect a dishonest platform. Every entry says so.
+- **Failures are local, not a cascade.** A tampered entry fails at itself and at
+  the link after it, not at every entry to the end of the chain — which is how hash
+  chains are usually described. A unit test asserting the cascade failed, and the
+  claim was narrowed rather than the test loosened.
+- **Truncating the chain at the tip is undetectable.** A shorter chain verifies
+  perfectly. Closing it needs the head digest published somewhere the platform
+  cannot rewrite.
+- **Tampering localises to a table, not a row.** One edited row invalidates the
+  proof for every row in that table, because the root commits to the whole set.
+- **Recording is a step after the write, not inside the writers**, so there is a
+  window where a table has changed and no entry says so. The DAG edges close it;
+  running a write by hand and forgetting `lineage record` reopens it.
+- **`lineage verify --deep` reads and decrypts every table.** It is minutes, not
+  seconds, and is opt-in for that reason.
+
 ### Orchestration (Stage 8)
 - **The scheduler is not run persistently.** DAGs are verified with
   `airflow dags test`, which executes the same tasks in-process. On 3.9 GB a
@@ -882,14 +944,14 @@ All of these are real findings or accepted costs. **None is an artefact.**
 | 7c | Fixed the 8 defects 7b found; reference contracts; rebuilt and re-measured | `f027465` |
 | 8 | Airflow: 5 DAGs, the promotion gate, attestation preflight | `ff95d1e` |
 | 8+ | Attested boundary widened, integration tests in CI, keystore backup | `f63b5c3` |
-| 9 | Streaming: Kafka -> the shared Bronze table, exactly-once | *this session* |
+| 9 | Streaming: Kafka -> the shared Bronze table, exactly-once | `317c7e3` |
+| 9b | **C3** — signed, Merkle-chained provenance; 4 tamper claims verified | *this session* |
 
 ### Pending
 
 | Stage | Deliverable | Est. sessions |
 |---|---|---|
-| **9b** | **C3 — verifiable signed lineage** | **1–2** |
-| 10 | FastAPI backend, native OIDC auth, RBAC, ~40 endpoints | 2 |
+| **10** | **FastAPI backend, native OIDC auth, RBAC, ~40 endpoints** | **2** |
 | 11 | React/TS dashboard, 9 modules | 3–4 |
 | 12 | Prometheus/Grafana/OTel | 1 |
 | 13–16 | Docker, CI/CD, Terraform + Azure architecture | 1–2 |
@@ -897,82 +959,88 @@ All of these are real findings or accepted costs. **None is an artefact.**
 | — | Experiments E1–E8 with graphs | 2 |
 | — | Final report, PPT, demo script, viva Q&A | 2 |
 
-**Total remaining: ~12–17 sessions.**
+**Total remaining: ~11–15 sessions.** Four of the five contributions are done; only
+C5 remains, and it is the smallest.
 
 ---
 
-## 13. Exact next steps — Stage 9b (C3)
+## 13. Exact next steps — Stage 10 (serving layer)
 
-**Goal:** cryptographically verifiable lineage. Of the five contributions, C1, C2
-and C4 are done and C3 is the one with primitives already sitting unused —
-`common/hashing.py` has canonical JSON, Merkle roots and chain verification from
-Stage 1, and nothing calls them.
+**Goal:** a FastAPI backend over what the platform already produces. With C1–C4
+done, the remaining risk in this project is not cryptographic; it is that nothing
+outside the CLI can read any of it.
 
-This is the highest-value remaining stage for the thesis, because it is a
-*contribution* rather than a platform component: signed, chained provenance is what
-distinguishes this from a lineage table anyone could write.
+### Why this is next rather than C5
 
-### The claim to aim at
+C5 (the enclave placement planner) is a modelling exercise on top of numbers the
+platform already produces. The backend is the thing every remaining stage depends
+on: the dashboard (Stage 11) has nothing to render without it, the monitoring stage
+(12) wants the same metrics endpoints, and the experiments want a way to drive the
+platform that is not a shell loop.
 
-> Given a Gold row, prove which code, which keys and which input records produced
-> it — and detect any tampering with that record of provenance.
+### The constraint that shapes the whole design
 
-"Detect tampering" is the load-bearing half. A lineage **table** records what
-happened; a lineage **chain** makes altering that record after the fact detectable.
-The difference is the contribution, and the report must not blur them.
+**`delta-rs` cannot read encrypted Parquet.** A Python API process without a JVM
+cannot query Bronze, Silver or Gold Delta at all — this is why Gold publishes
+disclosure-controlled aggregates into the `gold` schema in Postgres, and it was
+decided at Stage 6 for exactly this reason.
 
-### Where the code goes
+So the backend reads **Postgres**, not the lake. Every endpoint is a query against
+`platform.*` or `gold.*`. An endpoint that needs a Spark session is an endpoint that
+belongs in the CLI.
 
-`src/confidentia/lineage/` — already in `MEASURED_PACKAGES` and currently empty.
-Editing it will revoke key release, so expect `keys check` to fail on the first run
-after each change; that is the mechanism working.
+### What there is to serve, all of it already in Postgres
 
-### Design questions to settle first, in an ADR
+| Source | Endpoint family |
+|---|---|
+| `platform.run_summary` | pipeline runs, durations, failures |
+| `platform.dq_score`, `dq_rule`, `dq_detection` | quality scores and detections |
+| `platform.dq_evaluation_latest` | P/R/F1 against the answer key (7b) |
+| `platform.promotion_gate`, `promotion_blocked_now` | what the gate stopped and why |
+| `platform.key_release_audit` | grants and the four refusal paths |
+| `platform.lineage_entry`, `lineage_latest` | the provenance chain (9b) |
+| `platform.ingest_batch`, `ingest_file`, `watermark` | ingestion state |
+| `gold.*` | the disclosure-controlled marts |
 
-1. **Granularity.** Per run, per partition, or per record? Per record is the strong
-   claim and is almost certainly too expensive at 145k rows — measure it rather
-   than assuming, because "we measured the cost and chose per-partition" is a
-   result, while "we chose per-partition" is an assertion.
-2. **What goes in the leaf.** Input digests, the code measurement, the key IDs
-   released, the transformation's identity. Key *material* never, key *IDs* always
-   — the same rule `key_release_audit` already follows.
-3. **What the chain is anchored to.** A Merkle root per run, chained to the
-   previous run's root, is the obvious structure. What signs it is the real
-   question: the attestation signing key already exists in the keystore, which ties
-   provenance to the attested code — but under the `sim` backend that key is
-   self-held, so the honesty policy applies in full.
+### Design questions to settle first
 
-### The honesty constraint, which is sharper here than anywhere else
-
-Under `sim`, the process measures itself and holds its own signing key. A chain
-signed that way detects *external* tampering and cannot detect a dishonest
-platform. Every row must carry `hardware_rooted = false`, and the report must say
-plainly what the signature does and does not establish. This is the contribution
-most likely to be overclaimed, and the easiest for a viva panel to probe.
+1. **Auth.** The brief says native OIDC and RBAC. The honest scope here is one
+   identity provider and three roles (viewer / operator / auditor), with the role
+   deciding whether an endpoint can *trigger* anything. Do not build a user table
+   with passwords; this project has enough real cryptography without inventing
+   credential storage.
+2. **Whether the API may trigger pipeline runs.** It is tempting and it is a second
+   orchestrator. Airflow already owns scheduling, retries and the gate; an API that
+   can start a Bronze write is an API that can start one *while Airflow is running
+   one*, and `max_active_runs=1` is a per-DAG guarantee, not a per-machine one.
+   Prefer triggering the Airflow DAG over invoking the CLI.
+3. **What `lineage verify --deep` looks like over HTTP.** It takes minutes and holds
+   a Spark session. Either it is not exposed, or it is a job whose result is polled
+   — not a request that blocks a worker for four minutes.
 
 ### Deliverables
 
-- `lineage/{merkle,chain,recorder,verify}.py`
-- `store/sql/010_lineage.sql` — the chain, with the previous root as a column
-- `cli.py`: `lineage record|verify|show`
-- `scripts/verify_lineage.sh` — **tamper with a row and prove verification fails**;
-  a chain that is never tested against tampering is a hash column
-- Unit tests on Merkle construction and chain verification (pure, no Spark)
-- `docs/adr/0015-lineage-granularity-and-signing.md`
-- `docs/stage-reports/stage-09b.md`
+- `backend/` — FastAPI app, routers per family above, Pydantic response models
+- OIDC middleware + RBAC dependency, with the role checked per route
+- `/health`, `/ready` separating "process is up" from "Postgres answers"
+- OpenAPI schema committed, so the dashboard can generate its client
+- Integration tests against the real Postgres, in the CI job that already has one
+- `docs/adr/0016-serving-layer-boundaries.md` — the delta-rs constraint, and what
+  the API is not allowed to do
 
 ### Watch out for
 
-1. **Recording lineage must not read the answer key**, and `lineage` is in the
-   pipeline package list in `check_ground_truth_isolation.sh`. Nothing about
-   provenance needs the ground truth, so this should never bind — but it will fire
-   if a convenience import creeps in.
-2. **Do not put the chain in the lake.** It belongs in Postgres, where an append is
-   transactional; a Merkle chain in an eventually-consistent Delta table with
-   concurrent writers is a race waiting to happen.
-3. **Cost measurement is part of the deliverable.** Experiment E-series wants the
-   overhead of provenance as a percentage of pipeline time. Instrument it while
-   building rather than retrofitting timing later.
+1. **Do not add a second source of truth.** Every number the API returns must come
+   from a table or view the pipeline already writes. A metric computed in the API
+   layer is a metric the CLI and the dashboard will eventually disagree about —
+   which is exactly why `promotion_blocked_now` is a view rather than a query in
+   `gate.py`.
+2. **The API must never hold key material.** It reads Postgres; it does not attest,
+   does not request keys, and is not in `MEASURED_PACKAGES`. If an endpoint needs a
+   DEK, the design is wrong.
+3. **Row counts in `gold.*` are already suppressed** (C4). Do not "fix" a NULL cell
+   that looks like missing data — complementary suppression put it there, and
+   restoring it would make a suppressed value recoverable by subtraction.
 
 ---
 

@@ -35,6 +35,10 @@ class RunType(StrEnum):
     # QUALITY on purpose: a quality run is part of the pipeline, an evaluation run
     # reads the answers and is not allowed to influence anything downstream.
     EVALUATION = "evaluation"
+    # Digesting a table and signing the commitment. Its own type because it fails
+    # for its own reasons -- a missing signing key, a forked chain -- and folding
+    # those into 'quality' would hide a provenance outage among data problems.
+    LINEAGE = "lineage"
 
 
 class RunStatus(StrEnum):

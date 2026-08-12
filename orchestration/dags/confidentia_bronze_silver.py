@@ -114,7 +114,39 @@ with DAG(
                 """
             ),
         )
-        start >> bronze >> quality >> gate >> silver >> bronze_done
+        # Provenance is recorded after the write rather than inside it (ADR 0015),
+        # which leaves a window where the table has changed and no entry says so.
+        # Placing the recording immediately after the write is what closes that
+        # window, so these edges are the mechanism, not decoration.
+        bronze_lineage = BashOperator(
+            task_id=f"lineage_bronze_{tenant}",
+            bash_command=cli("lineage", "record", tenant, "--layer", "bronze"),
+            doc_md=doc(
+                """
+                Signs a Merkle root over every Bronze record for this tenant, bound
+                to the code measurement and the key IDs released to produce it
+                (C3).
+
+                Runs **before** the gate deliberately. The commitment must cover
+                what the source actually sent, including the batch a gate is about
+                to reject -- provenance for rejected data is exactly the provenance
+                someone asks for afterwards.
+                """
+            ),
+        )
+        silver_lineage = BashOperator(
+            task_id=f"lineage_silver_{tenant}",
+            bash_command=cli("lineage", "record", tenant, "--layer", "silver"),
+            doc_md=doc(
+                """
+                The Silver entry cites the current Bronze entry's digest, so the
+                edge from Bronze to Silver is a hash reference rather than a name
+                that could be pointed elsewhere.
+                """
+            ),
+        )
+        start >> bronze >> bronze_lineage >> quality >> gate >> silver
+        silver >> silver_lineage >> bronze_done
 
     dimension = BashOperator(
         task_id="silver_dimension_healthcare",

@@ -63,6 +63,25 @@ if [[ "${PARSE_ONLY:-0}" == "1" ]]; then
 fi
 
 echo
+# `confidentia_ingest` calls the REST collector, which needs the mock source API on
+# :8081. Without it the DAG fails with five connection-refused retries, and the
+# failure reads as a broken DAG rather than a missing precondition -- which cost an
+# hour of chasing once already. `rebuild_pipeline.sh` starts it for the same reason.
+if ! curl -sf http://localhost:8081/health >/dev/null 2>&1; then
+    echo "starting the mock source API on :8081 (confidentia_ingest needs it)"
+    (cd "$REPO_DIR" && source .venv/bin/activate \
+        && python -m uvicorn confidentia.ingestion.source_api:app \
+             --port 8081 --log-level warning) &
+    SOURCE_API_PID=$!
+    trap 'kill "$SOURCE_API_PID" 2>/dev/null || true' EXIT
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        curl -sf http://localhost:8081/health >/dev/null 2>&1 && break
+        sleep 1
+    done
+    curl -sf http://localhost:8081/health >/dev/null 2>&1 \
+        || echo "  WARNING: it did not come up; confidentia_ingest will fail on REST"
+fi
+
 echo "=== each DAG runs end to end ==="
 for dag in "${DAGS[@]}"; do
     state=$(airflow dags test "$dag" "$LOGICAL_DATE" 2>&1 \

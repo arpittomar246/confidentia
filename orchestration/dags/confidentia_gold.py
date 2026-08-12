@@ -50,7 +50,23 @@ with DAG(
                 """
             ),
         )
-        start >> build >> published
+        lineage = BashOperator(
+            task_id=f"lineage_gold_{tenant}",
+            bash_command=cli("lineage", "record", tenant, "--layer", "gold"),
+            doc_md=doc(
+                f"""
+                Signs a commitment to every {tenant} mart, citing the entry digest
+                of **every** current Silver commitment for the tenant — a mart is
+                built from several Silver datasets, so one upstream reference would
+                misdescribe it (ADR 0015).
+
+                This is the end of the chain a Gold consumer follows backwards:
+                mart → Silver entries → Bronze entries → the landing batch digests
+                the ingest registry content-addressed.
+                """
+            ),
+        )
+        start >> build >> lineage >> published
 
     disclosure = BashOperator(
         task_id="disclosure_report",
