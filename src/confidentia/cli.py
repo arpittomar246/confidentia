@@ -381,6 +381,39 @@ def keys_status() -> None:
     )
 
 
+@keys_app.command("check")
+def keys_check() -> None:
+    """Is the currently running code approved for key release?
+
+    **Exits non-zero when it is not.** This exists for the orchestrator. Changing
+    any measured package revokes key release, so the first pipeline run after a
+    deploy fails — correctly, and that development tax is the feature. But without
+    this check it fails *badly*: sixty seconds into starting a Spark session, deep
+    in a traceback, once per task, and the operator has to read a stack trace to
+    learn that the fix is one command.
+
+    As a preflight task it fails the DAG in about two seconds and says what to do.
+    It does not weaken the attestation check in any way — it asks the same
+    question earlier and reports the answer legibly.
+    """
+    from confidentia.crypto.attestation import measure_code
+    from confidentia.crypto.broker import KeyBroker
+
+    measurement = measure_code()
+    policy = KeyBroker().policy_for(measurement)
+    if policy is None:
+        typer.echo(f"measurement {measurement[:16]}... is NOT approved for key release.")
+        typer.echo("")
+        typer.echo("A measured package (crypto, pipelines, quality, lineage) has changed")
+        typer.echo("since the last approval, so every task that touches the lake will be")
+        typer.echo("refused its keys. Approve this build, or restore the approved one:")
+        typer.echo("")
+        typer.echo("    python -m confidentia.cli keys approve")
+        raise typer.Exit(code=1)
+
+    typer.echo(f"measurement {measurement[:16]}... approved for {policy['tenants']}")
+
+
 @keys_app.command("approve")
 def keys_approve(
     approved_by: Annotated[str, typer.Option(help="Who is approving this build.")] = "developer",
@@ -578,6 +611,44 @@ def gold_build(
         typer.echo(f"    {line}")
 
 
+@gold_app.command("dirty")
+def gold_dirty(
+    tenant: Annotated[str | None, typer.Argument(help="Tenant, or omit for all.")] = None,
+) -> None:
+    """Which mart partitions a late arrival has invalidated.
+
+    **Exits 0 when there is work to do and 1 when there is not**, which is the
+    inverse of the usual convention and is deliberate: the orchestrator polls this
+    as a sensor, and a sensor succeeds when its condition is met. Reporting "all
+    clean" as success would fire the restatement DAG continuously.
+    """
+    from confidentia.store import db as store_db
+
+    rows = store_db.fetch_all(
+        """
+        SELECT tenant, mart, count(*) AS partitions,
+               min(event_date) AS oldest, max(event_date) AS newest,
+               min(dirty_reason) AS reason
+          FROM platform.mart_partition_state
+         WHERE is_dirty AND (%s IS NULL OR tenant = %s)
+         GROUP BY tenant, mart
+         ORDER BY partitions DESC
+        """,
+        (tenant, tenant),
+    )
+    if not rows:
+        typer.echo("no dirty partitions")
+        raise typer.Exit(code=1)
+
+    total = sum(r["partitions"] for r in rows)
+    typer.echo(f"{total:,} dirty partitions across {len(rows)} mart(s)")
+    for row in rows:
+        typer.echo(
+            f"  {row['tenant'][:4]}/{row['mart']:26s} {row['partitions']:>5,} "
+            f"{row['oldest']} -> {row['newest']}  {row['reason'] or ''}"
+        )
+
+
 @gold_app.command("disclosure")
 def gold_disclosure(limit: Annotated[int, typer.Option()] = 15) -> None:
     """What each publish released and what it withheld."""
@@ -656,6 +727,61 @@ def quality_run(
             typer.echo(f"  {result.summary()}")
         except FileNotFoundError as exc:
             typer.echo(f"  {tenant}/{name}: skipped ({exc})")
+
+
+@quality_app.command("gate")
+def quality_gate(
+    tenant: Annotated[str, typer.Argument(help="healthcare | financial")],
+    dataset: Annotated[str | None, typer.Argument(help="Dataset, or omit for all.")] = None,
+    layer: Annotated[str, typer.Option(help="Layer whose score decides.")] = "bronze",
+    override: Annotated[
+        bool, typer.Option("--override", help="Promote despite a failing score. Audited.")
+    ] = False,
+    reason: Annotated[
+        str | None, typer.Option(help="Required with --override. Recorded in the audit trail.")
+    ] = None,
+) -> None:
+    """Refuse to promote a dataset whose quality is below the threshold.
+
+    **Exits non-zero when it blocks.** That is the whole mechanism: the
+    orchestrator reads the exit status, so a blocked gate fails the task and stops
+    the DAG rather than skipping it, which in Airflow is green and lets downstream
+    tasks run.
+    """
+    from confidentia.catalog.contracts import all_contracts
+    from confidentia.quality.gate import PromotionBlockedError, evaluate
+
+    if override and not reason:
+        raise typer.BadParameter("--override requires --reason; a silent bypass is not allowed")
+
+    datasets = (
+        [dataset]
+        if dataset
+        else [
+            c.dataset
+            for c in all_contracts()
+            if c.tenant.value == tenant and c.dataset != "patient_cdc" and not c.is_reference
+        ]
+    )
+
+    blocked: list[str] = []
+    for name in datasets:
+        try:
+            decision = evaluate(
+                tenant, name, layer=layer, override=override, override_reason=reason
+            )
+            typer.echo(f"  {decision.summary()}")
+        except PromotionBlockedError as exc:
+            typer.echo(f"  {exc}")
+            blocked.append(name)
+
+    if blocked:
+        # Every dataset is evaluated before exiting, so one run of the gate reports
+        # everything that is wrong. Stopping at the first failure would mean
+        # fixing one dataset only to be blocked by the next.
+        typer.echo("")
+        typer.echo(f"promotion BLOCKED for {len(blocked)}: {', '.join(blocked)}")
+        raise typer.Exit(code=1)
 
 
 @quality_app.command("rules")

@@ -34,12 +34,13 @@ step() {
 # GitHub: `pytest tests/unit` scopes collection to one directory, while CI's
 # `pytest -m unit` collects everything under testpaths and then filters, so CI
 # imports modules the local run never touched.
-step "lint / ruff"        ruff check src tests spikes
+step "lint / ruff"        ruff check src tests spikes orchestration
 step "lint / mypy"        mypy
 step "unit tests"         pytest -m unit --cov=confidentia --cov-report=term-missing -q
 step "integration tests"  pytest -m integration -q
 step "ground-truth isolation" bash scripts/check_ground_truth_isolation.sh
 step "plan/rule coverage"     python scripts/check_plan_rule_coverage.py
+step "DAG/CLI contract"       python scripts/check_dag_cli_contract.py
 step "key material handling"  python scripts/check_key_material_handling.py
 step "declared dependencies"  python scripts/check_declared_dependencies.py
 

@@ -1,8 +1,8 @@
 # PROJECT_CONTEXT
 
 Handoff document for **CONFIDENTIA**. Written so development can continue without
-re-deriving anything. Current as of **Stage 7c** (119 tracked files, 8 CI jobs
-green, 174 unit + 12 integration tests).
+re-deriving anything. Current as of **Stage 8** (135 tracked files, 9 CI jobs
+green, 188 unit + 12 integration tests).
 
 ---
 
@@ -145,9 +145,15 @@ we receive on Tuesday"; Silver answers "what happened on Tuesday".
 | Crypto | `cryptography` (AES-GCM, HKDF, scrypt, ECDSA P-256) | ≥43 |
 | Lint / types | ruff, mypy | — |
 | Data | pandas 3.0.5, numpy 2.1.3, pyarrow | — |
+| Orchestration | Apache Airflow, LocalExecutor, **its own virtualenv** | 2.11.2 |
 
-**Not used:** Kafka (Stage 9), Airflow (Stage 8), MinIO, Docker locally, Debezium
-(consumer implemented instead), ORM, Great Expectations (own rule engine).
+**Not used:** Kafka (Stage 9), MinIO, Docker locally, Debezium (consumer
+implemented instead), ORM, Great Expectations (own rule engine).
+
+**Airflow is installed in `~/airflow-venv`, never in `.venv`** (ADR 0013). It pins
+its dependencies hard and would be free to move pandas/numpy/pyarrow underneath the
+pipeline. The DAGs shell out to the project CLI; they cannot import `confidentia`
+and are not meant to.
 
 ---
 
@@ -174,19 +180,21 @@ we receive on Tuesday"; Silver answers "what happened on Tuesday".
 │   │   ├── bronze/writer.py      319
 │   │   ├── silver/{transforms,scd2,writer}.py  839
 │   │   └── gold/{disclosure,star,marts,writer}.py  1,338
-│   ├── quality/{rules,scoring,runner}.py  1,032
+│   ├── quality/{rules,scoring,runner,gate}.py  1,250  gate.py is Stage 8
 │   ├── evaluation/{ground_truth,detections,scoring,runner}.py  665  Stage 7b harness
 │   ├── spark/session.py          272  Session builder, PME wiring, column_keys_for_frame
-│   └── store/{db,migrations,repositories}.py + sql/  612 + 8 migrations
-├── tests/  (conftest + 8 unit + 1 integration)  1,890 lines
-├── scripts/  (13 operational scripts, see §9)
-├── docs/adr/ (7 ADRs)  docs/stage-reports/ (9 reports)
+│   └── store/{db,migrations,repositories}.py + sql/  612 + 9 migrations
+├── orchestration/dags/           5 DAGs + confidentia_common.py   Stage 8
+├── tests/  (conftest + 9 unit + 1 integration)  2,050 lines
+├── scripts/  (18 operational scripts, see §9)
+├── docs/adr/ (8 ADRs)  docs/stage-reports/ (10 reports)
 ├── spikes/pme/                   Stage 1 feasibility spike (still runnable, used by CI)
-├── .github/workflows/ci.yml      8 jobs (7 before Stage 7c)
+├── .github/workflows/ci.yml      9 jobs
 ├── docker-compose.yml            5 profiles (CI-validated, not used locally)
 └── pyproject.toml
 
-EMPTY (not yet built): backend/ frontend/ orchestration/ monitoring/ infrastructure/
+EMPTY (not yet built): backend/ frontend/ monitoring/ infrastructure/
+                       orchestration/plugins/
                        src/confidentia/{streaming,benchmarks,tee,lineage}/
 
 `evaluation/` is NOT a pipeline package. It is the only place besides
@@ -231,8 +239,14 @@ run rather than an accumulation of development runs.
 | `dq_result` | — | Per-rule outcome per run (`rows_evaluated` kept, not just rate) |
 | `dq_score` | 10 | Overall + six dimension scores + `promotion_blocked` |
 | `dq_freshness` | — | Dataset-level lag vs SLA |
+| `promotion_gate` | — | **Stage 8.** Every promotion decision, passes included. `blocked` stops the DAG; `overridden` records a deliberate bypass (which requires a reason). Stores the `threshold` used, since policy changes and old decisions must stay interpretable. View: `promotion_blocked_now` |
 | `dq_evaluation` | 83 | **Stage 7b.** TP/FP/FN + P/R/F1 per family and per field vs the answer key. `scope` is one of `overall`/`family`/`field`/`unscoreable`. `rule_exists` separates "the rule missed" from "no rule existed". View: `dq_evaluation_latest` |
-| `schema_migration` | 7 | Applied migrations with checksum |
+| `schema_migration` | 8 | Applied migrations with checksum |
+
+Airflow's ~48 metadata tables live in a **separate `airflow` database**, never in
+`confidentia`. Migrations here are tracked by checksum, and a second tool creating
+tables in the same database makes it far harder to say what the platform's schema
+actually is.
 
 ### `gold` schema (Postgres serving)
 
@@ -387,6 +401,42 @@ The 7b baseline is kept at `~/confidentia-baselines/stage-07b-evaluation.csv`
 (92 rows), exported before the rebuild — **outside the data root**, so a reset does
 not take it.
 
+### Orchestration (Stage 8)
+Five Airflow DAGs, and the change that matters more than any of them: the quality
+score now **stops** something. `promotion_blocked` had been computed since 7a and
+consumed by nothing. Full write-up in `docs/stage-reports/stage-08.md`,
+rationale in [ADR 0013](docs/adr/0013-airflow-deployment-and-the-quality-gate.md).
+
+```
+ingest ──▶ landing ──▶ bronze_silver ──▶ bronze ──▶ quality
+                             │
+                             └──▶ silver ──▶ gold
+restatement: @hourly sensor on dirty partitions ──▶ gold
+```
+
+Stages are chained by Airflow **Datasets**, not cron offsets: a medallion
+architecture is a chain of datasets, and a cron offset is a guess about runtime.
+
+**The gate exits non-zero and the task goes red.** `ShortCircuitOperator` was
+rejected: a short-circuited task is *green* and its downstream tasks are skipped, so
+Silver would build from a Bronze layer just judged unfit while the DAG looked
+healthy. `scripts/verify_gate.sh` asserts the exit statuses because every other
+property would survive a gate that printed `BLOCKED` and returned 0.
+
+Three properties of the gate worth knowing before touching it:
+
+- **A missing score blocks.** "No score" means the quality run never happened, so
+  nothing was checked — not that nothing is wrong.
+- **The threshold is policy, re-evaluated at gate time**, not the
+  `promotion_blocked` flag frozen at scoring time. Otherwise raising the threshold
+  does nothing until everything is re-scored.
+- **Overrides require a reason** and are recorded as overrides. The alternative to
+  supporting bypass explicitly is that people comment the gate out.
+
+**Orderings that used to be tribal knowledge are now dependency edges**: Bronze
+quality before `evaluate` (detections are overwritten per run); the CDC slot before
+the OLTP mutation (a slot created afterwards has no WAL to replay).
+
 ---
 
 ## 9. Commands
@@ -396,16 +446,28 @@ not take it.
 ```
 info                                    Resolved config + MODELLED/MEASURED label
 db migrate | status
-keys init | status | approve | audit
+keys init | status | approve | audit | check
 generate healthcare|financial|profile
 ingest file|rest|cdc|slot|oltp
 bronze write|verify
 silver write|dimension|quarantine
-gold build|disclosure|restatements
-quality run|rules|scores|failures
+gold build|disclosure|restatements|dirty
+quality run|rules|scores|failures|gate
 evaluate quality|report               Stage 7b: P/R/F1 vs the ground-truth answer key
 runs
 ```
+
+Three of these exist for the orchestrator and **signal through their exit status**,
+which is easy to break by "tidying" them:
+
+| Command | Exit 0 | Exit non-zero |
+|---|---|---|
+| `quality gate` | promotion allowed | **blocked** — this is what stops the DAG |
+| `keys check` | measurement approved | needs `keys approve` after a measured-package edit |
+| `gold dirty` | **there is work to do** | nothing to restate |
+
+`gold dirty` inverts the usual convention on purpose: a sensor succeeds when its
+condition is met, so "there is work" must be the success case.
 
 ### Full pipeline from scratch
 
@@ -465,6 +527,11 @@ and any change to them revokes key release.
 | `check_plan_rule_coverage.py` | **7c.** Every injected family/field pair has a rule that *could* catch it. Checks existence, not accuracy — `unit_inconsistency` has a rule and finds a quarter of what is injected, and that passes |
 | `reset_data.sh --yes` | **7c.** Destroys the lake, the raw files and all pipeline tracking state. **Keeps the keystore** — the one thing in the data root that is not regenerable |
 | `rebuild_pipeline.sh` | **7c.** The full pipeline from nothing, in the one order that works (see below) |
+| `install_airflow.sh` | **8.** Airflow 2.11.2 into `~/airflow-venv` with upstream constraints, plus the separate `airflow` database. Never touches `.venv` |
+| `airflow_env.sh` | **8.** `source` it, do not run it. Every `AIRFLOW__*` key has a counterpart in docker-compose.yml so local and portable cannot drift |
+| `verify_gate.sh` | **8.** The gate's four exit statuses. Everything else about the gate would survive it printing `BLOCKED` and returning 0 |
+| `verify_dags.sh` | **8.** All five DAGs run, and an unreachable threshold fails the DAG run with Silver never executing |
+| `check_dag_cli_contract.py` | **8.** AST guard: every `cli(...)` a DAG invokes resolves against the real Typer tree. No Airflow needed |
 
 `rebuild_pipeline.sh` encodes three orderings that are easy to get wrong by hand:
 `keys approve` after any measured-package edit; the **REST redelivery of
@@ -473,15 +540,36 @@ Silver deduplicates; and **Bronze quality last**, because the detections table i
 overwritten per run and `evaluate` refuses to score Silver detections against the
 answer key.
 
-### CI — 8 jobs, all green
+### Airflow
+
+```bash
+bash scripts/install_airflow.sh            # once
+source scripts/airflow_env.sh
+export CONFIDENTIA_KEYSTORE_PASSPHRASE="dev-passphrase-not-for-real-use"
+
+airflow dags test confidentia_bronze_silver 2026-08-09   # no scheduler needed
+bash scripts/verify_dags.sh
+```
+
+For the UI: `airflow scheduler` and `airflow webserver --port 8080` in separate
+shells, **both with the passphrase in their environment** — `BashOperator`
+inherits it, and the platform has no fallback for it anywhere.
+
+### CI — 9 jobs, all green
 
 `lint` (ruff + mypy) · `unit-tests` · `ground-truth-isolation` ·
-`plan-rule-coverage` · `declared-dependencies` · `encryption-guarantee` ·
-`generator-determinism` · `compose-validate`
+`plan-rule-coverage` · `dag-cli-contract` · `declared-dependencies` ·
+`encryption-guarantee` · `generator-determinism` · `compose-validate`
 
 Integration tests are **not** a CI job — they need PostgreSQL, which the workflow
 does not provision. They run locally via `ci_local.sh` only. Adding a Postgres
 service container is a small, worthwhile task.
+
+`ruff` covers `orchestration` too, but **`mypy` does not**: the DAGs import
+`airflow`, which is deliberately absent from the project venv, so type-checking
+them there would only report the missing library. `check_dag_cli_contract.py` is
+what covers that gap — it verifies the one thing static typing would have caught,
+which is that the commands the DAGs invoke exist.
 
 ---
 
@@ -554,6 +642,22 @@ Full rationale in `docs/adr/`. The ones that constrain future work:
 20. **Bronze uniqueness is per source system.** Bronze is "exactly what arrived",
     and two collectors legitimately delivering the same records is not a duplicate.
     Cross-source deduplication is Silver's job and Silver already does it.
+21. **The promotion gate fails; it never skips** (ADR 0013). A skipped Airflow task
+    is *green* and its downstream tasks still run, so a `ShortCircuitOperator` gate
+    would let Silver build from a Bronze layer just judged unfit while the DAG
+    looked healthy. The exit status is the mechanism, and `verify_gate.sh` asserts
+    it because nothing else would notice a gate that printed `BLOCKED` and
+    returned 0.
+22. **A missing quality score blocks promotion.** No score means the quality run
+    never happened, so nothing has been checked. A gate that opens when its input is
+    absent protects nothing at exactly the moment the pipeline is already broken.
+23. **Overrides require a reason and are recorded as overrides.** Bypassing a
+    known-bad gate is legitimate; doing it silently is not, and the alternative to
+    supporting it explicitly is that people comment the gate out.
+24. **Airflow never imports `confidentia`** (ADR 0013). It runs in its own
+    virtualenv and shells out to the CLI, so orchestration knows *when* to run
+    things and never *how* they work. `check_dag_cli_contract.py` covers the seam
+    that costs.
 
 ---
 
@@ -571,12 +675,32 @@ Full rationale in `docs/adr/`. The ones that constrain future work:
   now carry a `layer` column, so `evaluate` refuses the wrong layer instead of
   silently scoring Silver detections against the answer key. Adding a run key on top
   of that would give trends and is small.
-- **`promotion_blocked` is computed but nothing consumes it.** Wire into Stage 8.
+- ~~`promotion_blocked` is computed but nothing consumes it.~~ **Closed in Stage 8**
+  — the gate sits between Bronze and Silver and fails the task. Note the gate now
+  re-decides against the *current* threshold rather than reading this flag, so
+  `dq_score.promotion_blocked` is a historical record, not the control.
 - **Integration tests do not run in CI** — they need PostgreSQL and the workflow
   provisions none. They pass locally. Adding a `services: postgres` block to the
   workflow would close this and is a small task.
 - **Only one `ingest_date` partition exists** (all ingestion happened on one day), so
   partition pruning is not yet demonstrated.
+
+### Orchestration (Stage 8)
+- **The scheduler is not run persistently.** DAGs are verified with
+  `airflow dags test`, which executes the same tasks in-process. On 3.9 GB a
+  scheduler plus webserver competing with a 2 GB Spark driver is what the memory
+  budget cannot absorb. Start them manually for a UI screenshot.
+- **No SLA or alerting.** `email_on_failure` is off and no callback is wired. The
+  gate's audit trail is the notification channel — enough for one operator, not for
+  a team.
+- **`max_active_tasks=1` everywhere**, so the two tenants run serially despite
+  sharing nothing and being cryptographically isolated. A memory constraint, not a
+  design one; the first thing to relax on larger hardware.
+- **Backfill is untested.** `catchup=False` everywhere and every DAG is triggered or
+  `@once`, so the historical-reprocessing path has never run.
+- **`orchestration/plugins/` is empty.** The gate is a `BashOperator` calling the
+  CLI, which is deliberate (ADR 0013) — there was nothing a custom operator would
+  have added except a second place for the logic to live.
 
 ### Quality specifics
 - **177 of 237 rules are cosmetic** (whitespace/encoding, one pair per string
@@ -655,14 +779,14 @@ All of these are real findings or accepted costs. **None is an artefact.**
 | 6 | Gold: star schema, C4, restatement | `cc54677` |
 | 7a | Quality: 237 rules, scoring, detections | `a05bb4e` |
 | 7b | Evaluation harness: P/R/F1 per family vs ground truth | `b3fc540` |
-| 7c | Fixed the 8 defects 7b found; reference contracts; rebuilt and re-measured | *this session* |
+| 7c | Fixed the 8 defects 7b found; reference contracts; rebuilt and re-measured | `f027465` |
+| 8 | Airflow: 5 DAGs, the promotion gate, attestation preflight | *this session* |
 
 ### Pending
 
 | Stage | Deliverable | Est. sessions |
 |---|---|---|
-| **8** | **Airflow orchestration, 5 DAGs, quality gate wiring** | **1–2** |
-| 9 | Kafka streaming, Structured Streaming consumers | 1–2 |
+| **9** | **Kafka streaming, Structured Streaming consumers** | **1–2** |
 | 9b | **C3 — verifiable signed lineage** | 1–2 |
 | 10 | FastAPI backend, native OIDC auth, RBAC, ~40 endpoints | 2 |
 | 11 | React/TS dashboard, 9 modules | 3–4 |
@@ -676,82 +800,73 @@ All of these are real findings or accepted costs. **None is an artefact.**
 
 ---
 
-## 13. Exact next steps — Stage 8
+## 13. Exact next steps — Stage 9
 
-**Goal:** orchestrate the pipeline as Airflow DAGs and make the quality gate
-actually gate something. `promotion_blocked` has been computed since Stage 7a and
-nothing consumes it.
+**Goal:** stream the financial tenant through Kafka with Structured Streaming
+consumers, so the platform has a genuine low-latency path alongside the batch one.
 
 ### Before starting, decide one thing
 
-**Where Airflow runs.** ADR 0001 rules out Docker locally, and the host has 7.4 GB
-RAM with WSL capped at 4 GB. Airflow's scheduler plus webserver plus a Spark driver
-will not fit comfortably alongside PostgreSQL. Two viable options:
+**Whether streaming writes into the same Bronze tables as batch, or its own.**
 
-- `LocalExecutor` against the existing PostgreSQL instance, webserver started only
-  when a screenshot is needed. Cheapest, and the DAGs are the deliverable, not the UI.
-- `airflow dags test` only — no scheduler at all, DAGs exercised as code. Honest,
-  but weaker as a demo.
+Sharing them is the honest medallion answer and creates a real problem worth
+solving: concurrent writers to one Delta table, plus a small-file explosion from
+micro-batches that Stage 5 already had to fix once. Separate `bronze_stream/`
+tables sidestep both and make the comparison in experiment E1 cleaner, at the cost
+of two code paths that can diverge.
 
-Pick one and record it in an ADR. Do not install Airflow before deciding; a failed
-install with a half-initialised metadata DB in the platform database is a mess.
+Record the choice in an ADR before writing a consumer. Retrofitting it later means
+rewriting the checkpointing.
 
-### Where the code goes
+### Memory is the binding constraint, again
 
-`orchestration/dags/` and `orchestration/plugins/` already exist and are empty.
-Airflow's metadata database must **not** be the `confidentia` database — put it in
-its own, or the `platform` schema and Airflow's tables end up in one backup unit and
-`db migrate`'s checksum tracking gets confusing.
+Kafka in KRaft mode with a 512 MB heap (already configured in `docker-compose.yml`)
+plus a Structured Streaming driver plus Airflow leaves very little on a 3.9 GB box.
+Practical options, in order of preference:
 
-DAGs should call the CLI or the Python entry points, **not** reimplement pipeline
-logic. Every stage already has a callable: `run_quality`, `evaluate_dataset`,
-`write_bronze`, and so on. A DAG that duplicates transformation logic will drift.
+1. **Kafka natively in WSL, no Docker** (ADR 0001's precedent). Download the
+   tarball, KRaft single node, `-Xmx512m`.
+2. Run streaming only when Airflow is stopped, which the stage report should say
+   plainly rather than pretending they coexist.
 
-### The five DAGs
+`confluent-kafka` is already declared in `pyproject.toml` under the `stream` extra
+and is not installed.
 
-| DAG | Trigger | Shape |
-|---|---|---|
-| `ingest` | schedule | file → REST → CDC per tenant |
-| `bronze_silver` | after ingest | bronze write → quality run (bronze) → **gate** → silver write |
-| `gold` | after silver | silver dimension → gold build → disclosure |
-| `quality` | schedule | quality run + `evaluate quality` |
-| `restatement` | sensor on `mart_partition_state.is_dirty` | rebuild dirty marts |
+### What to build
 
-### The gate is the point
-
-`platform.dq_score.promotion_blocked` is already written per run. Stage 8 must make
-a blocked score **stop the DAG** before Silver, and record why. Two properties worth
-getting right:
-
-- The gate must fail the task, not skip it. A skipped task looks like success in
-  the Airflow UI and the next scheduled run proceeds as though nothing happened.
-- A blocked promotion must be visible in `platform.run` with a reason, so
-  `confidentia runs` explains the stall without opening Airflow.
+| Component | Notes |
+|---|---|
+| `streaming/producer.py` | Replay `raw/financial/transaction` into a topic at a controlled rate. The generator's diurnal curve is what makes the throughput graph meaningful |
+| `streaming/consumer.py` | Structured Streaming → Bronze. Checkpoint under `data_root/checkpoints` |
+| `streaming/watermark.py` | Event-time watermark; the late-chargeback path is the interesting case |
+| `cli.py` | `stream produce|consume|status` |
+| `orchestration/dags/` | A stream-monitor DAG, not a stream-runner one — a long-running consumer is not a DAG task |
 
 ### Watch out for
 
-1. **`keys approve` is a deployment step.** Any DAG that runs after a code change
-   fails key release until the measurement is re-approved. Either add an approval
-   task guarded on measurement drift, or document it as a manual release step. Do
-   not weaken the attestation check to make Airflow convenient.
-2. **One Spark session per tenant.** `session_for_tenant` scopes PME configuration
-   to one tenant; two tenants in one task risks writing one tenant's data under the
-   other's key. Keep tenants in separate tasks.
-3. **Bronze quality must run before `evaluate`**, and nothing may run Silver quality
-   in between — the detections table is overwritten per run. The evaluator refuses
-   rather than scoring the wrong layer, so a mis-ordered DAG fails loudly, but the
-   ordering is still a real constraint.
-4. **Memory.** `local[2]` with a 2 GB driver is already most of the WSL budget. Do
-   not run two Spark tasks concurrently; set `max_active_tasks=1` on the Spark DAGs.
+1. **Exactly-once needs the checkpoint and the Delta commit to agree.** Stage 3's
+   CDC collector already establishes the pattern: acknowledge only after a durable
+   write (ADR 0009). Do not weaken it for throughput.
+2. **The small-file problem returns.** A 10-second trigger writes 8,640 files a day
+   per partition. Stage 5 hit this and fixed it with compaction; streaming needs
+   `maxFilesPerTrigger`/`optimize` from the start, not after the table has 100k
+   files.
+3. **Encryption still applies.** The streaming writer needs the same
+   `column_keys_for_frame` treatment and the same `PARE` assertion after write —
+   Delta silently writes plaintext if the properties are set as writer options
+   (ADR 0007), and a streaming writer is a new place to make that mistake.
+4. **`keys approve` after adding `streaming/`** — but note `streaming` is *not*
+   currently in `MEASURED_PACKAGES` (`crypto`, `pipelines`, `quality`, `lineage`).
+   A streaming consumer writes to the lake under released keys, so it probably
+   should be. Decide deliberately; adding it is a one-line change with a real
+   development-tax consequence.
 
 ### Deliverables
 
-- `orchestration/dags/*.py` — five DAGs
-- `orchestration/plugins/` — the quality-gate operator or sensor
-- ADR for the Airflow deployment decision above
-- `store/sql/009_*.sql` if the gate needs its own audit table
-- `docs/stage-reports/stage-08.md`
-- CI: DAG import test (`python -c "import dagbag"`) is cheap and catches most breaks
+- `src/confidentia/streaming/` — producer, consumer, watermark handling
+- ADR for the shared-vs-separate Bronze decision
+- `docs/stage-reports/stage-09.md` with a throughput/latency measurement
+- Unit tests that do not need a broker (watermark and offset logic are pure)
 
 ---
 

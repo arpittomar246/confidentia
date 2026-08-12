@@ -24,7 +24,7 @@ jobs:
       # imports at module scope is installed here, at the cost of a slower job.
       - run: pip install -e ".[dev,storage,generators,ingestion,spark,lake,api]"
       - name: ruff
-        run: ruff check src tests spikes
+        run: ruff check src tests spikes orchestration
       - name: mypy
         run: mypy
 
@@ -65,6 +65,19 @@ jobs:
         with: {python-version: "3.11"}
       - run: pip install -e ".[dev,generators,storage,ingestion,spark,lake,api,observability]"
       - run: python scripts/check_plan_rule_coverage.py
+
+  # The DAGs shell out to `confidentia ...` rather than importing the package
+  # (ADR 0013), so a renamed CLI command leaves a DAG referring to one that no
+  # longer exists and nothing notices until a task fails at 03:00. This resolves
+  # every command a DAG invokes against the real Typer tree. No Airflow needed.
+  dag-cli-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install -e ".[dev,generators,storage,ingestion,spark,lake,api,observability]"
+      - run: python scripts/check_dag_cli_contract.py
 
   # Two dependencies were once installed by hand and never declared, so the project
   # worked locally and was uninstallable everywhere else. Needs no install step: it

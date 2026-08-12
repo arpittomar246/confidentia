@@ -94,7 +94,10 @@ where = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-src = ["src", "tests", "backend"]
+# `orchestration` is listed so ruff resolves `confidentia_common` as a first-party
+# import: Airflow puts the DAGs folder on sys.path, so the DAG files import it as a
+# top-level module rather than as a package.
+src = ["src", "tests", "backend", "orchestration/dags"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "N", "SIM", "RUF", "BLE"]
