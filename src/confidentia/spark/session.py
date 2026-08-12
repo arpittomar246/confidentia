@@ -72,11 +72,18 @@ def build_session(
     *,
     settings: Settings | None = None,
     extra_conf: dict[str, str] | None = None,
+    with_kafka: bool = False,
 ) -> SparkSession:
     """A memory-capped local session with Delta enabled.
 
     No encryption configuration is applied here; call ``apply_encryption`` (or use
     ``session_for_tenant``) once keys have been released.
+
+    ``with_kafka`` pulls the Structured Streaming Kafka connector, which is a Maven
+    package rather than a Python one — pyspark ships the streaming engine but not
+    the connector. It is **opt-in** because resolving it costs an Ivy round trip on
+    a cold cache, and every batch stage would pay that for a dependency it never
+    uses.
     """
     from delta import configure_spark_with_delta_pip
     from pyspark.sql import SparkSession
@@ -136,15 +143,33 @@ def build_session(
             hint="run scripts/build_kms_jar.sh; encrypted writes will fail",
         )
 
-    session = configure_spark_with_delta_pip(builder).getOrCreate()
+    # The connector version must track pyspark's exactly. Hard-coding "3.5.3" here
+    # would silently diverge the day pyspark is bumped, and the resulting failure
+    # is a Maven resolution error a long way from the cause.
+    extra_packages = (
+        [f"org.apache.spark:spark-sql-kafka-0-10_2.12:{pyspark_version()}"]
+        if with_kafka
+        else []
+    )
+
+    session = configure_spark_with_delta_pip(
+        builder, extra_packages=extra_packages
+    ).getOrCreate()
     session.sparkContext.setLogLevel("WARN")
     logger.info(
         "spark_session_started",
         version=session.version,
         master=settings.spark.master,
         driver_memory=settings.spark.driver_memory,
+        kafka=with_kafka,
     )
     return session
+
+
+def pyspark_version() -> str:
+    import pyspark
+
+    return str(pyspark.__version__)
 
 
 def apply_encryption(session: SparkSession, keys: ReleasedKeys) -> None:
@@ -255,16 +280,22 @@ def session_for_tenant(
     app_name: str | None = None,
     run_id: Any = None,
     settings: Settings | None = None,
+    with_kafka: bool = False,
 ) -> Iterator[tuple[SparkSession, ReleasedKeys]]:
     """A session scoped to one tenant, with keys released by attestation.
 
     Scoped deliberately: PME configuration is session-global, so serving two
     tenants from one session risks writing one tenant's data under another's key.
+    That matters more for streaming than for batch: a consumer holds its session
+    open for hours, so a session shared across tenants would be a standing risk
+    rather than a momentary one.
     """
     from confidentia.crypto.broker import request_keys
 
     keys = request_keys(tenant, run_id=run_id)
-    session = build_session(app_name or f"confidentia-{tenant}", settings=settings)
+    session = build_session(
+        app_name or f"confidentia-{tenant}", settings=settings, with_kafka=with_kafka
+    )
     try:
         apply_encryption(session, keys)
         yield session, keys

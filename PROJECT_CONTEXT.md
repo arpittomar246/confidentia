@@ -1,8 +1,8 @@
 # PROJECT_CONTEXT
 
 Handoff document for **CONFIDENTIA**. Written so development can continue without
-re-deriving anything. Current as of **Stage 8** (135 tracked files, 9 CI jobs
-green, 188 unit + 12 integration tests).
+re-deriving anything. Current as of **Stage 9** (148 tracked files, 10 CI jobs
+green, 201 unit + 12 integration tests).
 
 ---
 
@@ -78,11 +78,18 @@ Without it the keystore cannot be opened. There is deliberately no fallback.
 cd ~/confidentia && source .venv/bin/activate
 ```
 
-Install **from pyproject**, never package-by-package (this caused three CI failures):
+Install **from pyproject**, never package-by-package (this caused three CI failures).
+
+**The venv was created by `uv` and has no `pip` in it** — `pip install` fails with
+`command not found`, which is not obvious when it happens mid-stage. Use:
 
 ```bash
-pip install -e ".[dev,generators,storage,ingestion,spark,lake,api,observability]"
+uv pip install --python .venv/bin/python \
+  -e ".[dev,generators,storage,ingestion,spark,lake,api,observability,stream]"
 ```
+
+CI is a different environment and does use `pip` (`setup-python` provides it), so
+the workflow files are correct as written and should not be changed to match this.
 
 ---
 
@@ -93,6 +100,8 @@ SOURCES                    INGESTION                LANDING          BRONZE
  generated files    ──▶  FileCollector      ──▶  lake/landing/  ──▶  encrypted
  mock REST API      ──▶  RestCollector           (raw + envelope)    Delta
  Postgres WAL       ──▶  CdcCollector                                (PME)
+ Kafka topic        ──▶  Structured Streaming ─────────────────────────▲
+                         (bypasses landing; writes the SAME table)     │
                               │                                        │
                               ▼                                        ▼
                     platform.ingest_batch                         SILVER
@@ -127,6 +136,12 @@ SOURCES                    INGESTION                LANDING          BRONZE
 **Bronze partitions on ingest date, Silver on event date.** Bronze answers "what did
 we receive on Tuesday"; Silver answers "what happened on Tuesday".
 
+**Streaming has no landing zone.** The batch collectors land files first because a
+file drop is content-addressable and re-readable; a Kafka topic is neither, and the
+offset *is* the durable record. The consumer therefore writes Bronze directly, and
+`_source_file` carries `topic:partition:offset` — the streaming analogue of the
+file+row a batch record traces back to.
+
 ---
 
 ## 4. Technology stack
@@ -146,9 +161,12 @@ we receive on Tuesday"; Silver answers "what happened on Tuesday".
 | Lint / types | ruff, mypy | — |
 | Data | pandas 3.0.5, numpy 2.1.3, pyarrow | — |
 | Orchestration | Apache Airflow, LocalExecutor, **its own virtualenv** | 2.11.2 |
+| Streaming | Kafka (KRaft, native WSL, 512 MB heap) + Spark Structured Streaming | 3.8.0 |
+| Kafka client | `confluent-kafka` (producer only; Spark reads via the Maven connector) | 2.15.0 |
 
-**Not used:** Kafka (Stage 9), MinIO, Docker locally, Debezium (consumer
-implemented instead), ORM, Great Expectations (own rule engine).
+**Not used:** MinIO, Docker locally, Debezium (consumer implemented instead), ORM,
+Great Expectations (own rule engine), Avro/schema registry (JSON on the wire — see
+`stage-09.md`).
 
 **Airflow is installed in `~/airflow-venv`, never in `.venv`** (ADR 0013). It pins
 its dependencies hard and would be free to move pandas/numpy/pyarrow underneath the
@@ -184,10 +202,10 @@ and are not meant to.
 │   ├── evaluation/{ground_truth,detections,scoring,runner}.py  665  Stage 7b harness
 │   ├── spark/session.py          272  Session builder, PME wiring, column_keys_for_frame
 │   └── store/{db,migrations,repositories}.py + sql/  612 + 9 migrations
-├── orchestration/dags/           5 DAGs + confidentia_common.py   Stage 8
-├── tests/  (conftest + 9 unit + 1 integration)  2,050 lines
-├── scripts/  (20 operational scripts, see §9)
-├── docs/adr/ (9 ADRs)  docs/stage-reports/ (10 reports)
+├── orchestration/dags/           6 DAGs + confidentia_common.py   Stages 8-9
+├── tests/  (conftest + 10 unit + 1 integration)  2,190 lines
+├── scripts/  (24 operational scripts, see §9)
+├── docs/adr/ (9 ADRs)  docs/stage-reports/ (11 reports)
 ├── spikes/pme/                   Stage 1 feasibility spike (still runnable, used by CI)
 ├── .github/workflows/ci.yml      10 jobs
 ├── docker-compose.yml            5 profiles (CI-validated, not used locally)
@@ -437,6 +455,38 @@ Three properties of the gate worth knowing before touching it:
 quality before `evaluate` (detections are overwritten per run); the CDC slot before
 the OLTP mutation (a slot created afterwards has no WAL to replay).
 
+### Streaming (Stage 9)
+A Structured Streaming consumer writes the financial tenant's transactions into
+**the same Bronze table** the collectors write (ADR 0014) — a fourth source, not a
+second pipeline. Full write-up in `docs/stage-reports/stage-09.md`.
+
+Bronze holds both, distinguished only by `_source_system`:
+
+| `_source_system` | rows | delivered by |
+|---|---|---|
+| `financial` | 60,409 | file drop (batch) |
+| `kafka` | 60,000 | Structured Streaming |
+
+Measured on this box: producer **21,392 rec/s** unthrottled; consumer **~3,000
+rec/s** steady state per micro-batch, **1,226 rec/s** end to end including ~15 s of
+SparkSession and Kafka-connector startup. Quote both or neither — the first alone
+overstates a scheduled drain, the second alone understates the engine by half.
+
+Three properties, each asserted by `verify_streaming.sh` rather than assumed:
+
+- **One table.** Grouping Bronze on `_source_system` must show both values.
+- **Encrypted.** The `PARE` assertion runs after every micro-batch. A streaming
+  writer is a fresh place to make ADR 0007's mistake.
+- **Idempotent.** Re-consuming left the count at 80,409 → 80,409. Exactly-once is
+  Delta's `txnAppId`/`txnVersion`, so a micro-batch replayed after a crash is
+  refused by the transaction log rather than appended twice. This is what makes the
+  scheduled DAG safe to kill at any point.
+
+**The watermark deliberately does not solve late chargebacks.** A chargeback
+confirming fraud 1–45 days later is `DROPPED` by any watermark that keeps state
+bounded — pinned as a test. That case belongs to the batch restatement path Stage 6
+built and Stage 8 schedules. Streaming handles the fresh path only.
+
 ---
 
 ## 9. Commands
@@ -454,6 +504,7 @@ silver write|dimension|quarantine
 gold build|disclosure|restatements|dirty
 quality run|rules|scores|failures|gate
 evaluate quality|report               Stage 7b: P/R/F1 vs the ground-truth answer key
+stream produce|consume|status         Stage 9: Kafka -> the shared Bronze table
 runs
 ```
 
@@ -542,6 +593,10 @@ code, which nothing would report.
 | `check_dag_cli_contract.py` | **8.** AST guard: every `cli(...)` a DAG invokes resolves against the real Typer tree. No Airflow needed |
 | `backup_keystore.sh` | **Run this.** Copies the keystore outside the data root, keeping the last 3. The keystore is the only thing in the data root that is not regenerable, and `reset_data.sh` is the realistic threat to it |
 | `simulate_ci_integration.sh` | Runs the `integration-tests` CI job's exact steps against throwaway databases, so the workflow can be verified without pushing |
+| `services.sh status\|start` | **Run first.** Checks/starts Postgres and Kafka. Exists because Postgres has twice died mid-session under sustained Spark load |
+| `install_kafka.sh` | **9.** Kafka 3.8.0, KRaft, native. Version matches the image docker-compose.yml pins |
+| `kafka.sh start\|stop\|status\|topics\|reset` | **9.** 512 MB heap, matching the compose limit. `reset` also reformats storage |
+| `verify_streaming.sh` | **9.** One Bronze table, encrypted, and idempotent on replay — the third is the one worth having |
 
 `rebuild_pipeline.sh` encodes three orderings that are easy to get wrong by hand:
 `keys approve` after any measured-package edit; the **REST redelivery of
@@ -699,6 +754,31 @@ Full rationale in `docs/adr/`. The ones that constrain future work:
 - **Only one `ingest_date` partition exists** (all ingestion happened on one day), so
   partition pruning is not yet demonstrated.
 
+### Environment flakiness — read this before debugging a mystery
+- **PostgreSQL has twice been found dead mid-session**, both times during sustained
+  Spark work, both times abruptly: the log shows normal checkpoints and then an
+  end-of-recovery restart, with no shutdown request between. Kafka survived both, so
+  it is not the WSL VM stopping, and no OOM kill was recorded. **The cause is not
+  established.** The symptom is `PoolTimeout: couldn't get a connection` from the
+  middle of a long run. `scripts/services.sh start` checks first and is now the
+  opening step of `rebuild_pipeline.sh`; the fix if it happens is
+  `sudo service postgresql start`.
+
+### Streaming (Stage 9)
+- **Only the financial tenant streams.** Healthcare arrives by file and CDC, which
+  is realistic — an EHR is not a message bus — so the streaming path is
+  demonstrated on one dataset.
+- **No Silver streaming.** The consumer stops at Bronze, so end-to-end streaming
+  latency is not measurable. Streaming Silver needs stateful cross-source
+  deduplication, which is materially harder than the append this stage does.
+- **`acks=1`, not `acks=all`.** On a single broker they are the same guarantee at
+  different latencies; claiming otherwise would be a replication claim this
+  topology cannot make.
+- **The Kafka log lives under the data root**, so `reset_data.sh` clears it. That is
+  deliberate — resetting the lake without the topic would leave the consumer's
+  checkpoint holding offsets into data that no longer corresponds to Bronze. Reset
+  both together, or neither.
+
 ### Orchestration (Stage 8)
 - **The scheduler is not run persistently.** DAGs are verified with
   `airflow dags test`, which executes the same tasks in-process. On 3.9 GB a
@@ -800,14 +880,15 @@ All of these are real findings or accepted costs. **None is an artefact.**
 | 7a | Quality: 237 rules, scoring, detections | `a05bb4e` |
 | 7b | Evaluation harness: P/R/F1 per family vs ground truth | `b3fc540` |
 | 7c | Fixed the 8 defects 7b found; reference contracts; rebuilt and re-measured | `f027465` |
-| 8 | Airflow: 5 DAGs, the promotion gate, attestation preflight | *this session* |
+| 8 | Airflow: 5 DAGs, the promotion gate, attestation preflight | `ff95d1e` |
+| 8+ | Attested boundary widened, integration tests in CI, keystore backup | `f63b5c3` |
+| 9 | Streaming: Kafka -> the shared Bronze table, exactly-once | *this session* |
 
 ### Pending
 
 | Stage | Deliverable | Est. sessions |
 |---|---|---|
-| **9** | **Kafka streaming, Structured Streaming consumers** | **1–2** |
-| 9b | **C3 — verifiable signed lineage** | 1–2 |
+| **9b** | **C3 — verifiable signed lineage** | **1–2** |
 | 10 | FastAPI backend, native OIDC auth, RBAC, ~40 endpoints | 2 |
 | 11 | React/TS dashboard, 9 modules | 3–4 |
 | 12 | Prometheus/Grafana/OTel | 1 |
@@ -820,80 +901,78 @@ All of these are real findings or accepted costs. **None is an artefact.**
 
 ---
 
-## 13. Exact next steps — Stage 9
+## 13. Exact next steps — Stage 9b (C3)
 
-**Goal:** stream the financial tenant through Kafka with Structured Streaming
-consumers, so the platform has a genuine low-latency path alongside the batch one.
+**Goal:** cryptographically verifiable lineage. Of the five contributions, C1, C2
+and C4 are done and C3 is the one with primitives already sitting unused —
+`common/hashing.py` has canonical JSON, Merkle roots and chain verification from
+Stage 1, and nothing calls them.
 
-### The blocking decision is already made
+This is the highest-value remaining stage for the thesis, because it is a
+*contribution* rather than a platform component: signed, chained provenance is what
+distinguishes this from a lineage table anyone could write.
 
-**Streaming writes into the same Bronze tables as batch**
-([ADR 0014](docs/adr/0014-streaming-writes-to-shared-bronze.md)). Decided ahead of
-implementation because retrofitting it means rewriting the checkpointing.
+### The claim to aim at
 
-The consumer is **a fourth source, not a special case**: it sets `_source_system`
-and goes through the same ingest envelope as the collectors. Bronze already
-tolerates several sources, and Stage 7c made Bronze uniqueness *per source system*
-precisely so a redelivery is not confused with a duplicate.
+> Given a Gold row, prove which code, which keys and which input records produced
+> it — and detect any tampering with that record of provenance.
 
-The two problems this creates — Delta concurrent writers, and a micro-batch
-small-file explosion — are the ones worth having. A platform where streaming writes
-somewhere else is two pipelines sharing a repository, and "where should the boundary
-be drawn" then becomes a question about two systems rather than one.
+"Detect tampering" is the load-bearing half. A lineage **table** records what
+happened; a lineage **chain** makes altering that record after the fact detectable.
+The difference is the contribution, and the report must not blur them.
 
-**What would overturn it:** if Delta's optimistic concurrency produces repeated
-commit conflicts rather than occasional retries at the trigger interval the
-experiments need. That is a measurement, so it will be visible — and "we had to
-split the tables" is itself a result worth reporting, not a quiet workaround.
+### Where the code goes
 
-### Memory is the binding constraint, again
+`src/confidentia/lineage/` — already in `MEASURED_PACKAGES` and currently empty.
+Editing it will revoke key release, so expect `keys check` to fail on the first run
+after each change; that is the mechanism working.
 
-Kafka in KRaft mode with a 512 MB heap (already configured in `docker-compose.yml`)
-plus a Structured Streaming driver plus Airflow leaves very little on a 3.9 GB box.
-Practical options, in order of preference:
+### Design questions to settle first, in an ADR
 
-1. **Kafka natively in WSL, no Docker** (ADR 0001's precedent). Download the
-   tarball, KRaft single node, `-Xmx512m`.
-2. Run streaming only when Airflow is stopped, which the stage report should say
-   plainly rather than pretending they coexist.
+1. **Granularity.** Per run, per partition, or per record? Per record is the strong
+   claim and is almost certainly too expensive at 145k rows — measure it rather
+   than assuming, because "we measured the cost and chose per-partition" is a
+   result, while "we chose per-partition" is an assertion.
+2. **What goes in the leaf.** Input digests, the code measurement, the key IDs
+   released, the transformation's identity. Key *material* never, key *IDs* always
+   — the same rule `key_release_audit` already follows.
+3. **What the chain is anchored to.** A Merkle root per run, chained to the
+   previous run's root, is the obvious structure. What signs it is the real
+   question: the attestation signing key already exists in the keystore, which ties
+   provenance to the attested code — but under the `sim` backend that key is
+   self-held, so the honesty policy applies in full.
 
-`confluent-kafka` is already declared in `pyproject.toml` under the `stream` extra
-and is not installed.
+### The honesty constraint, which is sharper here than anywhere else
 
-### What to build
-
-| Component | Notes |
-|---|---|
-| `streaming/producer.py` | Replay `raw/financial/transaction` into a topic at a controlled rate. The generator's diurnal curve is what makes the throughput graph meaningful |
-| `streaming/consumer.py` | Structured Streaming → Bronze. Checkpoint under `data_root/checkpoints` |
-| `streaming/watermark.py` | Event-time watermark; the late-chargeback path is the interesting case |
-| `cli.py` | `stream produce|consume|status` |
-| `orchestration/dags/` | A stream-monitor DAG, not a stream-runner one — a long-running consumer is not a DAG task |
-
-### Watch out for
-
-1. **Exactly-once needs the checkpoint and the Delta commit to agree.** Stage 3's
-   CDC collector already establishes the pattern: acknowledge only after a durable
-   write (ADR 0009). Do not weaken it for throughput.
-2. **The small-file problem returns.** A 10-second trigger writes 8,640 files a day
-   per partition. Stage 5 hit this and fixed it with compaction; streaming needs
-   `maxFilesPerTrigger`/`optimize` from the start, not after the table has 100k
-   files.
-3. **Encryption still applies.** The streaming writer needs the same
-   `column_keys_for_frame` treatment and the same `PARE` assertion after write —
-   Delta silently writes plaintext if the properties are set as writer options
-   (ADR 0007), and a streaming writer is a new place to make that mistake.
-4. **`streaming` is already in `MEASURED_PACKAGES`**, added after Stage 8 before
-   the package had any content. Every edit to a consumer will therefore revoke key
-   release until `keys approve` runs. That is the intended tax, not a misconfiguration
-   — expect it on the first run after each change and use `keys check` to confirm.
+Under `sim`, the process measures itself and holds its own signing key. A chain
+signed that way detects *external* tampering and cannot detect a dishonest
+platform. Every row must carry `hardware_rooted = false`, and the report must say
+plainly what the signature does and does not establish. This is the contribution
+most likely to be overclaimed, and the easiest for a viva panel to probe.
 
 ### Deliverables
 
-- `src/confidentia/streaming/` — producer, consumer, watermark handling
-- ADR for the shared-vs-separate Bronze decision
-- `docs/stage-reports/stage-09.md` with a throughput/latency measurement
-- Unit tests that do not need a broker (watermark and offset logic are pure)
+- `lineage/{merkle,chain,recorder,verify}.py`
+- `store/sql/010_lineage.sql` — the chain, with the previous root as a column
+- `cli.py`: `lineage record|verify|show`
+- `scripts/verify_lineage.sh` — **tamper with a row and prove verification fails**;
+  a chain that is never tested against tampering is a hash column
+- Unit tests on Merkle construction and chain verification (pure, no Spark)
+- `docs/adr/0015-lineage-granularity-and-signing.md`
+- `docs/stage-reports/stage-09b.md`
+
+### Watch out for
+
+1. **Recording lineage must not read the answer key**, and `lineage` is in the
+   pipeline package list in `check_ground_truth_isolation.sh`. Nothing about
+   provenance needs the ground truth, so this should never bind — but it will fire
+   if a convenience import creeps in.
+2. **Do not put the chain in the lake.** It belongs in Postgres, where an append is
+   transactional; a Merkle chain in an eventually-consistent Delta table with
+   concurrent writers is a race waiting to happen.
+3. **Cost measurement is part of the deliverable.** Experiment E-series wants the
+   overhead of provenance as a percentage of pipeline time. Instrument it while
+   building rather than retrofitting timing later.
 
 ---
 

@@ -886,6 +886,99 @@ def quality_failures(
         )
 
 
+stream_app = typer.Typer(help="Kafka streaming (Stage 9).", no_args_is_help=True)
+app.add_typer(stream_app, name="stream")
+
+
+@stream_app.command("produce")
+def stream_produce(
+    tenant: Annotated[str, typer.Argument(help="Tenant to replay.")] = "financial",
+    dataset: Annotated[str, typer.Argument(help="Dataset to replay.")] = "transaction",
+    limit: Annotated[int | None, typer.Option(help="Stop after this many records.")] = None,
+    rate: Annotated[
+        int, typer.Option(help="Records per second. 0 replays as fast as possible.")
+    ] = 2000,
+    topic: Annotated[str | None, typer.Option(help="Override the configured topic.")] = None,
+) -> None:
+    """Replay landing-zone records into Kafka, standing in for the payment switch.
+
+    Reads the **same files the file collector reads**, so the streaming and batch
+    paths see identical records. A producer that generated its own data would make
+    every difference between the two paths ambiguous.
+    """
+    from confidentia.streaming.producer import produce
+
+    result = produce(tenant, dataset, topic=topic, limit=limit, rate=rate)
+    typer.echo(f"  {result.summary()}")
+
+
+@stream_app.command("consume")
+def stream_consume(
+    tenant: Annotated[str, typer.Argument()] = "financial",
+    dataset: Annotated[str, typer.Argument()] = "transaction",
+    follow: Annotated[
+        bool, typer.Option("--follow", help="Keep running instead of draining once.")
+    ] = False,
+    trigger_seconds: Annotated[int, typer.Option(help="Trigger interval when following.")] = 10,
+    max_offsets: Annotated[int, typer.Option(help="Cap per micro-batch.")] = 20_000,
+    timeout: Annotated[int | None, typer.Option(help="Stop after this many seconds.")] = None,
+    topic: Annotated[str | None, typer.Option()] = None,
+) -> None:
+    """Stream a topic into the **shared** Bronze table as a fourth source.
+
+    Drains what is in the topic and stops, unless `--follow`. Bounded is the right
+    default: it terminates, it is testable, and it is what an orchestrated task
+    needs.
+    """
+    from confidentia.streaming.consumer import consume
+
+    result = consume(
+        tenant, dataset, topic=topic, once=not follow,
+        trigger_seconds=trigger_seconds, max_offsets_per_trigger=max_offsets,
+        timeout_seconds=timeout,
+    )
+    typer.echo(f"  {result.summary()}")
+
+
+@stream_app.command("status")
+def stream_status(
+    topic: Annotated[str | None, typer.Option(help="Topic to inspect.")] = None,
+) -> None:
+    """Partition count, message count, and what Bronze has consumed so far."""
+    from confidentia.store import db as store_db
+    from confidentia.streaming.consumer import checkpoint_path
+    from confidentia.streaming.producer import topic_status
+
+    info = topic_status(topic)
+    if not info["exists"]:
+        typer.echo(f"topic {info['topic']}: does not exist")
+        raise typer.Exit(code=1)
+
+    typer.echo(f"topic {info['topic']}")
+    typer.echo(f"  partitions   {info['partitions']}")
+    typer.echo(f"  messages     {info['messages']:,}")
+
+    checkpoint = checkpoint_path("financial", "transaction")
+    typer.echo(f"  checkpoint   {'present' if checkpoint.exists() else 'absent'} ({checkpoint})")
+
+    rows = store_db.fetch_all(
+        """
+        SELECT status, records_read, started_at, finished_at
+          FROM platform.run
+         WHERE run_type = 'stream'
+         ORDER BY started_at DESC LIMIT 5
+        """
+    )
+    if rows:
+        typer.echo("")
+        typer.echo("recent stream runs:")
+        for row in rows:
+            typer.echo(
+                f"  {row['started_at']:%Y-%m-%d %H:%M:%S}  {row['status']:10s} "
+                f"{row['records_read']:>9,} records"
+            )
+
+
 evaluate_app = typer.Typer(
     help="Score the platform against the ground-truth answer key.", no_args_is_help=True
 )

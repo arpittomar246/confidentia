@@ -32,6 +32,10 @@ step() {
     fi
 }
 
+# Postgres has twice been found dead mid-session during sustained Spark work.
+# Checking first turns a PoolTimeout forty minutes in into a clear failure now.
+step "services"           bash "$REPO_DIR/scripts/services.sh" start
+
 step "migrate"            cli db migrate
 
 # The keystore deliberately survives a data reset -- it is the one thing in the
