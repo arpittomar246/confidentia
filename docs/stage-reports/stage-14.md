@@ -133,6 +133,30 @@ that a superseded run reports on a commit that is no longer HEAD.
 The release workflow sets `cancel-in-progress: false`: never cancel a release
 half-published.
 
+## What executing the workflows found
+
+Both new workflows were dispatched rather than trusted to parse, and both failed
+the first time.
+
+**`aquasecurity/trivy-action@0.28.0` does not exist.** Every job in both workflows
+died in `Set up job` before building anything: the real tags carry a `v` prefix and
+start at v0.30. I wrote a plausible-looking version instead of checking — the same
+class of mistake as claiming a compose file works without building it.
+
+Fixed by dropping the marketplace action and running **`aquasec/trivy:0.73.0`**
+directly. That is the version every number in this report came from, invoked the
+same way, so CI and a developer's shell now run the identical command.
+
+**`pip-audit --strict` failed on this project's own package.** It tries to resolve
+`confidentia (0.1.0)` against PyPI, where it will never exist. `--skip-editable`
+does not help, because the editable install is PEP 660 and pip-audit does not
+recognise it as editable. Auditing a `pip freeze --exclude-editable` list keeps
+`--strict` — a package that cannot be resolved should be a gap, not a pass — while
+narrowing it to real third-party dependencies.
+
+The release **dry run then passed end to end** in 8m7s: four images built, four
+CycloneDX SBOMs generated, nothing pushed and nothing attested.
+
 ## Known gaps
 
 1. **No release has been published.** The workflow has a dry run and the tag path

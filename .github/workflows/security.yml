@@ -41,14 +41,28 @@ jobs:
         with: {python-version: "3.11", cache: pip}
       - run: pip install -e ".[dev,generators,storage,ingestion,cdc,spark,lake,api,observability,stream]"
       - run: pip install pip-audit
-      - name: Audit installed dependencies
+      - name: Audit dependencies
+        # Audited from a frozen list rather than the live environment, because
+        # `pip-audit` on the environment tries to resolve **this project** against
+        # PyPI -- "Dependency not found on PyPI and could not be audited:
+        # confidentia (0.1.0)" -- which `--strict` correctly treats as a failure.
+        # `--skip-editable` does not help: the editable install is PEP 660, and
+        # pip-audit does not recognise it as editable.
+        #
+        # `--strict` is kept, because the whole point is that a package which
+        # cannot be resolved is a gap rather than a pass. Freezing first narrows
+        # what is audited to real third-party dependencies without weakening that.
+        #
         # PYSEC-2026-113 (pyarrow) is ignored with a reason, and the reason is the
         # advisory's own text: the use-after-free is in Arrow C++ behind
         # `RecordBatchFileReader::PreBufferMetadata`, and upstream states the
         # functionality "is not exposed in language bindings (Python, Ruby, C
         # GLib), so these bindings are not vulnerable". This project is Python
         # only. See ADR 0020.
-        run: pip-audit --strict --ignore-vuln PYSEC-2026-113
+        run: |
+          pip freeze --exclude-editable > frozen.txt
+          echo "auditing $(wc -l < frozen.txt) pinned packages"
+          pip-audit --strict --no-deps -r frozen.txt --ignore-vuln PYSEC-2026-113
 
   # Every image is scanned and every result reaches the Security tab. Only two are
   # *gated*, and the difference is whether this repository can act on a finding.
