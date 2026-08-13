@@ -36,7 +36,13 @@ spike_keys.json
 
 # --- Data. The lakehouse lives outside the repo (see CONFIDENTIA_DATA_ROOT),
 # but guard against anything landing here by accident. ---
-data/
+#
+# Anchored with a leading slash so it matches a `data/` directory at the repository
+# root and nowhere else. Unanchored, it matched `infrastructure/terraform/modules/
+# data/` too -- so the Terraform data module was silently never committed, the
+# working tree looked complete, and CI failed on a checkout that genuinely lacked
+# it: "Unable to evaluate directory symlink: lstat modules/data".
+/data/
 *.parquet
 *.delta/
 _delta_log/
