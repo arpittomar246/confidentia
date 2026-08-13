@@ -146,11 +146,11 @@ we receive on Tuesday"; Silver answers "what happened on Tuesday".
 
 | | |
 |---|---|
-| Python | 20,777 lines across `src/` |
-| Tests | 386 (309 unit, 77 integration) |
+| Python | 21,399 lines across `src/` |
+| Tests | 403 (326 unit, 77 integration) |
 | CI | 14 jobs, plus security and release workflows |
 | Migrations | 11 forward-only SQL migrations |
-| Design records | 19 ADRs, 19 stage reports |
+| Design records | 20 ADRs, 19 stage reports |
 | Data processed | 422,297 Bronze rows across 11 datasets, two tenants |
 
 ---
@@ -599,15 +599,13 @@ Stated as findings, because most of them were found by this project's own checks
 5. **`crypto.column_encryption` is declared and unread.** ADR 0007 names `envelope`
    as E4's baseline arm; the mode does not exist.
 
-6. **The Azure deployment has never been applied, and could not run the platform if
-   it were.** `terraform validate` passes, `fmt -check` passes and Checkov reports
-   36/0; `plan` builds the provider and stops on authentication. Preparing the
-   deployment (`docs/deploy.md`) also found the larger blocker: nothing reads a
-   SEV-SNP report, so `TEE_BACKEND=snp-cvm` flips every label to MEASURED and then
-   fails every attestation, and therefore every key release. **The infrastructure
-   would come up and the platform would refuse to run on it.** The gap is
-   `docs/architecture/azure.md` step 2, it can only be written and tested on the
-   hardware, and §9 previously understated it.
+6. **The Azure deployment has never been applied, and the SEV-SNP reader has never
+   run.** `terraform validate` passes, `fmt -check` passes and Checkov reports 36/0;
+   `plan` builds the provider and stops on authentication. The reader exists
+   (ADR 0024) and `snp.VALIDATED_ON_HARDWARE` is `False` — enforced by a test and
+   carried in every audit row. **No figure in this report comes from that path**,
+   and none may until a first run produces a measurement MAA agrees with. §9
+   previously understated the work involved; that is corrected there.
 
 7. **The Azure key release policy proves the hardware, not the code.** Any Azure
    confidential VM meeting the claims obtains the key; pinning the workload needs
@@ -631,23 +629,40 @@ Stated as findings, because most of them were found by this project's own checks
 are and become enforceable rather than voluntary. C5's modelled ×1.206 becomes a
 measurement; the *placement* does not change, because it is derived from contracts.
 
-**The infrastructure is written and the code is not, and an earlier draft of this
-section said otherwise.** It claimed the change was "configuration plus one Java
-class". That was wrong, and preparing the deployment is what exposed it:
+**An earlier draft of this section claimed the change was "configuration plus one
+Java class".** That was wrong, and preparing the deployment exposed it:
+`AttestationBackend.produce_measurement()` raised for every non-`sim` backend, so
+selecting `TEE_BACKEND=snp-cvm` flipped every label to MEASURED and then failed every
+attestation and therefore every key release. The infrastructure would have come up
+and the platform would have refused to run on it.
 
-- `AttestationBackend.produce_measurement()` raises for every non-`sim` backend.
-  Nothing reads a SEV-SNP report — on an Azure confidential VM that means
-  `/dev/sev-guest` or the vTPM NV index, exchanged for an MAA token. **It is not
-  written.**
-- `broker.py` decides locally. On Azure it must call the HSM's release endpoint,
-  keeping the audit table and the four refusal reasons but not the decision.
+**The reader has since been written (ADR 0024), and it has never run on confidential
+computing hardware.** That is a third state — implemented, unproven — which the
+project's MEASURED/MODELLED vocabulary had no word for, so it was given one:
+`snp.VALIDATED_ON_HARDWARE` is `False`, it is stamped into every piece of evidence as
+a claim, it reaches the key-release audit table, and a test asserts it. An audit
+trail written by that code says on its face that the code producing it is unproven.
 
-The Java class was real and was only one of the items. The misleading part is worse
-than the omission: selecting `TEE_BACKEND=snp-cvm` flips `is_measured` to `True` and
-every label to MEASURED *before* attestation is attempted, so a deployment reaches
-the point of looking successful — in `confidentia info`, in the dashboard banner —
-and then fails every key release, and the pipeline cannot run at all. **The
-infrastructure would come up and the platform would refuse to run on it.**
+The risk is specific and worth naming, because it is not a crash. **A wrong struct
+offset returns 48 bytes that look exactly like a launch measurement**, and no test on
+a machine without SEV-SNP can distinguish one from the other. So MAA is asked to
+parse the same report independently and the two answers are compared on every
+attestation; a disagreement raises and names the offset to fix. That check is the
+reason the deployment is worth attempting rather than guessing, and it is why the MAA
+exchange is not optional.
+
+What is *not* provisional is everything that would still be a vulnerability if the
+reader were perfect, and it is tested: the MAA token is verified against MAA's JWKS
+with the algorithm pinned and the issuer taken from configuration rather than from
+the token; the guest must be `sevsnpvm`, `azure-compliant-uvm` and not debuggable;
+and **the measurement in the evidence must be the one MAA signed** — without which a
+guest could present a genuine token from any confidential VM beside whatever
+measurement it liked, and the broker's allowlist would approve key release for a
+measurement nothing attested to.
+
+One item from that draft's omission remains open: `broker.py` still decides locally,
+and on Azure must call the HSM's release endpoint — keeping the audit table and the
+four refusal reasons, but not the decision.
 
 What *is* true is the claim underneath: nothing in `pipelines/`, `quality/`,
 `evaluation/` or `lineage/` changes, and the seams the swap needs — a `TeeBackend`
@@ -713,7 +728,7 @@ bash scripts/ci_local.sh                # the 14 CI jobs, locally
 
 ## Appendix B — Where the design decisions live
 
-19 ADRs in `docs/adr/`. The ones that constrain everything else:
+20 ADRs in `docs/adr/`. The ones that constrain everything else:
 
 | ADR | Decision |
 |---|---|
@@ -724,5 +739,6 @@ bash scripts/ci_local.sh                # the 14 CI jobs, locally
 | 0017 | Where the confidentiality boundary is drawn |
 | 0022 | Encrypting the landing zone, and why the detector reads the disk |
 | 0023 | Why `patient_change` was deleted rather than contracted |
+| 0024 | A SEV-SNP reader, written and marked unproven |
 | 0020 | Supply chain: scan policy and what is accepted |
 | 0021 | Azure as the cloud target, and what stays simulated |

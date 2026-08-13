@@ -120,10 +120,14 @@ changes who decides a key release. Preparing the deployment is what caught it:
 `TEE_BACKEND=snp-cvm` flips every label to MEASURED and then fails every
 attestation. The infrastructure comes up; the platform refuses to run on it.
 
-Item 2 is the blocker, and it cannot be written honestly from here — the code paths
-it needs (`/dev/sev-guest`, the vTPM NV index, an MAA token exchange) can only be
-tested on the hardware. Writing it untested and calling the deployment ready would
-be the exact failure this project spent sixteen stages avoiding.
+**Item 2 has since been written** — `crypto/snp.py`, ADR 0024 — and has never run on
+confidential computing hardware. `VALIDATED_ON_HARDWARE` is `False`, stamped into
+every piece of evidence and asserted by a test, because "implemented" and "known to
+work" are different claims and this project labels the difference rather than
+letting a reader assume it. The MAA cross-check on the launch measurement is what
+will catch a wrong struct offset on first run.
+
+Item 4 is now the open one: `broker.py` still decides locally.
 
 ## What this would cost to prove
 

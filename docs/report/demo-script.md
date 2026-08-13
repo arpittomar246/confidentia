@@ -150,7 +150,13 @@ confidentia keys audit | head -20
 >
 > Under `sim` this is a mechanism, not a guarantee — the process measures itself and
 > could lie. On Azure Managed HSM the same policy is enforced by a service that
-> won't release the key, and the code change is configuration plus one Java class."
+> won't release the key.
+>
+> I used to say that swap was 'configuration plus one Java class'. Writing the
+> deployment runbook proved otherwise — nothing read a SEV-SNP report, so selecting
+> the hardware backend flipped every label to MEASURED and then failed every key
+> release. The reader exists now and has never run on hardware, which the code says
+> about itself: `VALIDATED_ON_HARDWARE` is False and rides along in every audit row."
 
 ### 5 · Tamper detection (2 minutes)
 
@@ -207,7 +213,7 @@ confidentia bench results
 
 ### 8 · Close (30 seconds)
 
-> "Five contributions, six of eight experiments measured, 386 tests, 14 CI jobs.
+> "Five contributions, six of eight experiments measured, 403 tests, 14 CI jobs.
 >
 > The result I didn't expect is that tokenising identifiers doesn't shrink the
 > boundary — quasi-identifiers do that work, which makes disclosure control

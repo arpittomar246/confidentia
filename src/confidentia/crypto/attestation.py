@@ -143,6 +143,21 @@ def issue_nonce() -> str:
     return secrets.token_hex(16)
 
 
+def _is_hex(value: str) -> bool:
+    """Can this nonce go into REPORT_DATA as bytes rather than as its ASCII?
+
+    ``issue_nonce`` produces hex, so the 32-character nonce becomes 16 bytes rather
+    than 32. Both fit the 64-byte field; decoding is preferred only because it is
+    what every other SEV-SNP tool does, and a report that has to be compared against
+    one produced by Azure's own tooling should bind the nonce the same way.
+    """
+    try:
+        bytes.fromhex(value)
+    except ValueError:
+        return False
+    return True
+
+
 class AttestationBackend:
     """Produces signed evidence about the running code."""
 
@@ -151,6 +166,11 @@ class AttestationBackend:
         self.settings = settings
         self.backend = settings.tee.backend
         self.signing_key_path = signing_key_path or (settings.keystore_path / SIGNING_KEY_FILENAME)
+        # Per-attestation scratch for the SNP path: the nonce to bind into
+        # REPORT_DATA, and the report once obtained, so the measurement and the MAA
+        # exchange use the same one.
+        self._pending_report_data: bytes = b""
+        self._pending_report: tuple[Any, bytes] | None = None
 
     # ------------------------------------------------------------------
 
@@ -192,33 +212,102 @@ class AttestationBackend:
         if self.backend is TeeBackend.SIM:
             # Self-measured. See the module docstring.
             return measure_code(), False
-        # Real backends would read MRENCLAVE from the SGX report or the launch
-        # measurement from the SNP attestation report here. Failing loudly rather
-        # than silently falling back to the simulated value: a silent fallback
-        # would let a misconfigured deployment claim hardware rooting it does not
-        # have, which is the single most damaging failure this project could have.
-        #
-        # The message names the gap rather than describing the symptom, because the
-        # symptom is misleading. Selecting this backend flips `is_measured` to True
-        # and every label to MEASURED *before* reaching here, so a deployment that
-        # gets this far looks — in settings, in `confidentia info`, in the dashboard
-        # banner — like it succeeded. What actually happens is that every key
-        # release fails and the pipeline cannot run at all.
+        if self.backend is TeeBackend.SNP_CVM:
+            # Implemented, never executed on hardware. See crypto/snp.py.
+            report, _ = self._snp_report()
+            return report.launch_measurement, True
+
+        # Failing loudly rather than silently falling back to the simulated value:
+        # a silent fallback would let a misconfigured deployment claim hardware
+        # rooting it does not have, which is the single most damaging failure this
+        # project could have.
         raise AttestationError(
-            f"backend {self.backend.value} is selected, and this host has no hardware "
-            "attestation source. Nothing reads the SEV-SNP report: on an Azure "
-            "confidential VM that means /dev/sev-guest or the vTPM NV index, "
-            "exchanged for an MAA token. It is not written, and it is not a "
-            "configuration gap — see docs/architecture/azure.md step 2. "
-            "Until it is, the only backend that can attest is 'sim'."
+            f"backend {self.backend.value} is selected, and nothing in this codebase "
+            "produces a measurement for it. Only 'sim' and 'snp-cvm' are implemented."
         )
 
+    def _snp_report(self) -> tuple[Any, bytes]:
+        """The SEV-SNP report, with the nonce bound into REPORT_DATA where possible.
+
+        Kept separate from ``produce_measurement`` so ``attest`` can reuse the same
+        report for the MAA exchange rather than asking the firmware twice — two
+        reports would carry two different timestamps and only one could be bound to
+        the nonce.
+        """
+        from confidentia.crypto import snp
+
+        if self._pending_report is not None:
+            return self._pending_report
+
+        try:
+            result = snp.obtain_report(self._pending_report_data or b"")
+        except snp.SnpError as exc:
+            raise AttestationError(f"SEV-SNP attestation unavailable: {exc}") from exc
+
+        self._pending_report = result
+        return result
+
+    def _maa_claims(self) -> dict[str, Any]:
+        """Exchange the report for an MAA token and carry it in the evidence.
+
+        The token is what makes this hardware-rooted: a third party, holding AMD's
+        root of trust, asserts that the report is genuine. The local ECDSA signature
+        still covers the evidence — it binds the nonce and the claims — but it is no
+        longer the root, and the verifier checks the token before it trusts the
+        measurement.
+
+        ``snp_implementation_validated`` is stamped into every piece of evidence and
+        therefore into every key-release audit row, so an audit trail written by this
+        code says on its face that the code producing it has never run on hardware.
+        """
+        from confidentia.crypto import snp
+
+        report, runtime_data = self._snp_report()
+        uri = self.settings.crypto.attestation_uri
+        if not uri:
+            raise AttestationError(
+                "CRYPTO_ATTESTATION_URI is not set. A SEV-SNP report is not evidence "
+                "until Microsoft Azure Attestation has vouched for it; "
+                "`terraform output attestation_uri` is the value."
+            )
+
+        try:
+            token, maa_claims = snp.attest_via_maa(uri, report, runtime_data)
+        except snp.SnpError as exc:
+            raise AttestationError(f"MAA attestation failed: {exc}") from exc
+
+        if not snp.VALIDATED_ON_HARDWARE:
+            logger.warning(
+                "snp_implementation_unvalidated",
+                detail=(
+                    "this SEV-SNP code path has never been executed on confidential "
+                    "computing hardware; treat the measurement as provisional"
+                ),
+            )
+
+        return {
+            "maa_token": token,
+            "maa_attestation_type": maa_claims.get("x-ms-attestation-type"),
+            "maa_compliance_status": maa_claims.get("x-ms-compliance-status"),
+            "snp_implementation_validated": snp.VALIDATED_ON_HARDWARE,
+        }
+
     def attest(self, nonce: str, claims: dict[str, Any] | None = None) -> AttestationEvidence:
+        # The nonce has to reach the firmware before the report is requested, so it
+        # is stashed here rather than passed down through produce_measurement --
+        # whose signature is shared with every other backend and should not grow a
+        # parameter only one of them uses.
+        self._pending_report_data = bytes.fromhex(nonce) if _is_hex(nonce) else nonce.encode()
+        self._pending_report = None
+
         measurement, hardware_rooted = self.produce_measurement()
         key = self._load_or_create_key()
 
         produced_at = datetime.now(UTC).isoformat()
         evidence_claims: dict[str, Any] = dict(claims or {})
+
+        if self.backend is TeeBackend.SNP_CVM:
+            evidence_claims.update(self._maa_claims())
         payload: dict[str, Any] = {
             "measurement": measurement,
             "nonce": nonce,
@@ -257,6 +346,10 @@ class AttestationVerifier:
 
     def __init__(self, max_age_seconds: int | None = None) -> None:
         settings = get_settings()
+        # Held because the MAA path needs the attestation authority, and reading it
+        # from the token's own `iss` would be trusting the evidence to name its own
+        # verifier.
+        self.settings = settings
         # `is None`, not `or`: a caller passing 0 means "accept nothing older than
         # this instant", and `or` would silently substitute the 300s default --
         # turning a deliberately strict freshness window into a lax one.
@@ -317,4 +410,115 @@ class AttestationVerifier:
         if evidence.backend == TeeBackend.SIM.value and evidence.hardware_rooted:
             raise AttestationError(
                 "evidence claims hardware rooting under the sim backend; rejected"
+            )
+
+        # Conversely, a backend that claims hardware rooting must prove it. The
+        # ECDSA signature above proves only that whoever holds the local signing key
+        # produced this evidence -- which, on the machine being attested, is
+        # everybody. The MAA token is the part a compromised guest cannot forge.
+        if evidence.backend == TeeBackend.SNP_CVM.value:
+            self._verify_maa_token(evidence)
+
+    def _verify_maa_token(self, evidence: AttestationEvidence) -> None:
+        """Check the MAA token, and that it describes *this* evidence.
+
+        Three things have to hold, and the third is the one that is easy to forget:
+
+        1. The token is signed by a key in MAA's JWKS. This is the root of trust —
+           MAA verifies the AMD signature chain on the report, so a valid token
+           means AMD's firmware vouched for the guest.
+        2. The token says the guest is what policy requires: an SEV-SNP VM, running
+           a compliant Azure utility VM, not debuggable.
+        3. **The launch measurement in the token equals the measurement in the
+           evidence.** Without this, a guest could present a genuine token from any
+           confidential VM alongside whatever measurement it liked, and the broker
+           would approve key release against a measurement nothing attested to.
+
+        The measurement carried in the evidence is what the key broker's policy
+        allowlist is checked against, which is exactly why it has to be the one MAA
+        signed rather than the one the prover typed.
+        """
+        import jwt
+
+        token = evidence.claims.get("maa_token")
+        if not token:
+            raise AttestationError(
+                "evidence claims the snp-cvm backend but carries no MAA token. A "
+                "SEV-SNP report is not evidence until MAA has vouched for it."
+            )
+
+        uri = self.settings.crypto.attestation_uri
+        if not uri:
+            raise AttestationError(
+                "CRYPTO_ATTESTATION_URI is not set, so there is no authority to "
+                "verify this MAA token against. Refusing rather than trusting the "
+                "issuer named inside the token itself."
+            )
+
+        issuer = uri.rstrip("/")
+        try:
+            client = jwt.PyJWKClient(f"{issuer}/certs", cache_keys=True)
+            key = client.get_signing_key_from_jwt(token).key
+        except jwt.PyJWKClientError as exc:
+            raise AttestationError(f"no MAA signing key matches this token: {exc}") from exc
+
+        try:
+            claims = jwt.decode(
+                token,
+                key=key,
+                # Named explicitly rather than taken from the token's own header:
+                # letting evidence choose its verification algorithm is the
+                # algorithm-confusion opening the API layer documents at length.
+                algorithms=["RS256"],
+                issuer=issuer,
+                options={
+                    "verify_signature": True,
+                    "verify_exp": True,
+                    "verify_iss": True,
+                    # MAA tokens carry no audience.
+                    "verify_aud": False,
+                    "require": ["exp", "iss"],
+                },
+            )
+        except jwt.InvalidTokenError as exc:
+            raise AttestationError(f"MAA token rejected: {exc}") from exc
+
+        attestation_type = str(claims.get("x-ms-attestation-type", "")).lower()
+        if attestation_type != "sevsnpvm":
+            raise AttestationError(
+                f"MAA attested a {attestation_type or 'unknown'} guest, not an "
+                "SEV-SNP confidential VM"
+            )
+
+        compliance = str(claims.get("x-ms-compliance-status", "")).lower()
+        if compliance != "azure-compliant-uvm":
+            raise AttestationError(
+                f"MAA reports compliance status {compliance or 'unknown'}; policy "
+                "requires azure-compliant-uvm"
+            )
+
+        if claims.get("x-ms-sevsnpvm-is-debuggable") is True:
+            raise AttestationError(
+                "the attested VM is debuggable, so its memory is not confidential"
+            )
+
+        attested = str(claims.get("x-ms-sevsnpvm-launchmeasurement", "")).lower()
+        if not attested:
+            raise AttestationError("MAA token carries no launch measurement")
+        if not secrets.compare_digest(attested, evidence.measurement.lower()):
+            raise AttestationError(
+                "the measurement in this evidence is not the one MAA attested: "
+                f"evidence says {evidence.measurement[:16]}..., token says "
+                f"{attested[:16]}.... Key release policy is checked against the "
+                "evidence, so this mismatch is a forged measurement, not a mismatch."
+            )
+
+        if evidence.claims.get("snp_implementation_validated") is False:
+            # Not a refusal. The evidence is cryptographically sound; what is
+            # unproven is the code that assembled it. Refusing would make the
+            # backend unusable and so guarantee it is never validated.
+            logger.warning(
+                "snp_evidence_from_unvalidated_implementation",
+                measurement=evidence.measurement[:16],
+                detail="MAA verified this token; the reader that produced it has never run on hardware",
             )

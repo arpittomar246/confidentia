@@ -1,25 +1,24 @@
-"""What a hardware TEE backend does today, pinned so nobody assumes otherwise.
+"""What a hardware TEE backend does on a host that has no such hardware.
 
-Preparing the Azure deployment turned up a gap that reads, from the outside, like a
-success. Selecting `TEE_BACKEND=snp-cvm` makes `is_measured` return True and every
-label read MEASURED — those key off the enum alone — and *then* the first
-attestation raises, because nothing reads a SEV-SNP report. The infrastructure comes
-up and the platform refuses to run on it.
+Selecting `TEE_BACKEND=snp-cvm` makes `is_measured` return True and every label read
+MEASURED — those key off the enum alone. The reader now exists (ADR 0024), so the
+question this file pins is what happens when it runs somewhere there is nothing to
+read: **it must refuse, and say which sources it tried.**
 
-Two properties are asserted here and they pull in opposite directions on purpose:
+Two properties, pulling in opposite directions on purpose:
 
 - the labels **do** flip, because that is the designed behaviour and the report
   documents it;
-- attestation **does not** succeed, and must keep failing loudly until someone
-  implements the report reader.
+- attestation **does not** succeed on a machine with no SEV-SNP guest, and must keep
+  failing loudly rather than falling back.
 
-The second is the one that matters. A silent fallback to the simulated measurement
+The second is the one that matters. A silent fallback to the self-measured value
 would let a misconfigured deployment claim hardware rooting it does not have, which
 is the single most damaging failure this project could have — so the test asserts
-the refusal, not the eventual feature.
+the refusal.
 
-**Delete the last test when the SNP reader lands, not before**, and replace it with
-one that asserts a real launch measurement.
+This file used to say the reader was unwritten. It is written now and has still
+never run on hardware; `tests/unit/test_snp.py` pins that distinction.
 """
 
 from __future__ import annotations
@@ -61,8 +60,10 @@ class TestHardwareBackendIsDeclaredNotImplemented:
         with pytest.raises(AttestationError) as caught:
             AttestationBackend().attest(issue_nonce())
 
-        # The message has to name the gap, because the symptom points elsewhere: by
-        # the time this raises, everything the operator can see already says MEASURED.
+        # The message has to name both sources it tried, because the symptom points
+        # elsewhere: by the time this raises, everything the operator can see already
+        # says MEASURED. "It didn't work" would send them to the wrong place.
         message = str(caught.value)
-        assert "no hardware attestation source" in message
-        assert "sev-guest" in message or "vTPM" in message
+        assert "no SEV-SNP attestation report could be obtained" in message
+        assert "sev-guest" in message
+        assert "vtpm" in message

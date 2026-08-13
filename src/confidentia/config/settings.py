@@ -214,6 +214,11 @@ class CryptoSettings(BaseSettings):
     encryption_via_hadoop_conf: bool = True
     attestation_curve: Literal["P-256", "P-384"] = "P-256"
     attestation_nonce_ttl_seconds: int = 300
+    # Microsoft Azure Attestation, for the `snp-cvm` backend only. Empty under
+    # `sim`, where evidence is self-signed and there is no third party to consult.
+    # `terraform output attestation_uri` is the value; the Terraform also renders
+    # it into the VM's environment as CRYPTO_ATTESTATION_URI.
+    attestation_uri: str = ""
 
 
 class TeeSettings(BaseSettings):

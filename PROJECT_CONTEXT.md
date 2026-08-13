@@ -3,7 +3,7 @@
 Handoff document for **CONFIDENTIA**. Written so development can continue without
 re-deriving anything. Current as of **Stage 16 + ADR 0022 — all sixteen stages complete, landing zone encrypted** (14 CI jobs green plus
 security and release workflows,
-309 unit + 77 integration tests,
+326 unit + 77 integration tests,
 **all five contributions delivered**, API and dashboard live, containers building,
 Prometheus and Grafana wired to the pipeline's own tables).
 
@@ -218,7 +218,7 @@ and are not meant to.
 ├── orchestration/dags/           6 DAGs + confidentia_common.py   Stages 8-9b
 ├── tests/  (conftest + 12 unit + 1 integration + 2 api)  333 tests
 ├── scripts/  (operational scripts, see §9)
-├── docs/adr/ (19 ADRs)  docs/stage-reports/ (18 reports)
+├── docs/adr/ (20 ADRs)  docs/stage-reports/ (18 reports)
 ├── frontend/                     Vite + React + TS, 9 modules (Stage 11)
 ├── docker/{backend,frontend,spark,airflow}/  four images, all built (Stage 13)
 ├── docs/api/openapi.json         Committed schema; CI fails if stale

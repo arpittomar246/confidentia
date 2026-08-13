@@ -275,17 +275,34 @@ credentials.**
 > was section 9, which said the change was "configuration plus one Java class". It
 > omitted this. I corrected the section rather than quietly closing the gap.
 
-**If pressed — "so why not write it?"**
+**If pressed — "and did you write it?"**
 
-> Because it can only be tested on the hardware. Reading `/dev/sev-guest` or the
-> vTPM NV index and exchanging the report for an MAA token is perhaps a day's work,
-> and none of it can be verified from a laptop. Shipping an untested hardware path
-> and calling the deployment ready is exactly the failure the whole project is
-> organised against — it's the same shape as the first Bronze verification that
-> reported a pass on unencrypted data.
+> Yes, afterwards, and I marked it unproven rather than done. `crypto/snp.py` reads
+> the report from `/dev/sev-guest` or the vTPM and exchanges it for an MAA token. It
+> has never run on confidential computing hardware.
 >
-> There's a test pinning the current behaviour instead: the labels flip, and
-> attestation refuses. It's written to be deleted when the reader lands.
+> That's a third state the project's vocabulary didn't have. MEASURED and MODELLED
+> don't cover "implemented, untested", so it got a label:
+> `VALIDATED_ON_HARDWARE = False`, stamped into every piece of evidence, carried into
+> the key-release audit table, and asserted by a test — so flipping it needs a diff,
+> and an audit trail written by that code says on its face that the code is unproven.
+
+**And the question behind the question — "how would you even know if it's wrong?"**
+
+> This is the part I'd want credit for. The dangerous failure isn't a crash. A wrong
+> struct offset returns 48 bytes that look exactly like a launch measurement, and
+> nothing on a laptop can tell the difference.
+>
+> So MAA parses the same report independently and I compare the two answers on every
+> attestation. If they disagree it raises and names the offset to fix. That's the
+> check that turns "it looked plausible" into a hard failure — and it's why the MAA
+> exchange isn't optional even though the report alone would give me a measurement.
+>
+> Everything that would still be a vulnerability if the reader were perfect *is*
+> tested: the token verified against JWKS with the algorithm pinned, the guest
+> required to be non-debuggable, and the measurement in the evidence required to be
+> the one MAA signed — otherwise a genuine token from any confidential VM would
+> launder an arbitrary measurement past the broker's allowlist.
 
 ### "Your violation detector now reports nothing. How do I know it still works?"
 

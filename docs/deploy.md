@@ -8,40 +8,31 @@ enclave overhead currently modelled at ×1.206.
 
 ---
 
-## Stop: this cannot be completed today
+## Read this first: the reader has never run on hardware
 
-Preparing this runbook exposed a defect, and it is better to state it at the top
-than to let you find it after an apply.
+The SEV-SNP reader now exists (`crypto/snp.py`, ADR 0024), so the deployment can be
+attempted end to end. **It has never been executed on confidential computing
+hardware**, and that is a load-bearing caveat rather than a formality.
 
-**Nothing in this codebase can read a SEV-SNP attestation report.**
-`AttestationBackend.produce_measurement()` raises for every backend that is not
-`sim`. So the sequence on a deployed VM is:
+`snp.VALIDATED_ON_HARDWARE` is `False`. It is stamped into every piece of evidence,
+lands in the key-release audit trail, and a test asserts it. The first successful
+run on Azure is what earns the right to flip it.
 
-1. `TEE_BACKEND=snp-cvm` — settings accept it, `is_measured` flips to `True`, every
-   label reads MEASURED. **It looks like it worked.**
-2. The first attestation raises `AttestationError`.
-3. Every key release fails. The pipeline cannot run at all.
+**The failure to watch for is not a crash.** A wrong struct offset returns 48 bytes
+that look exactly like a launch measurement. Nothing on a laptop can tell the
+difference — so the code asks MAA to parse the same report and compares the two
+answers on every attestation. If they disagree it raises and names the offset. That
+check is why the deployment is worth attempting rather than guessing.
 
-**The infrastructure would come up and the platform would refuse to run on it.**
-Verified locally, not inferred:
+**No number from this path goes into the dissertation until the reader has produced
+a measurement that MAA agreed with.** Three outcomes are possible on first run, and
+all three are useful:
 
-```
-$ TEE_BACKEND=snp-cvm confidentia info
-backend=snp-cvm is_measured=True label=MEASURED
-AttestationError: backend snp-cvm is selected, and this host has no hardware
-attestation source...
-```
-
-What is missing is `docs/architecture/azure.md` step 2: read the report from
-`/dev/sev-guest` or the vTPM NV index and exchange it for an MAA token. That is
-perhaps a day's work, and **it can only be written and tested on the hardware** —
-which is why it is not written here. Shipping an untested hardware path and calling
-the deployment ready would be precisely the failure this project spent sixteen
-stages avoiding.
-
-So the honest sequence is: **deploy the infrastructure, write step 2 on the VM,
-then measure.** Sections 1–3 below stand as written. Section 4 is blocked until
-step 2 exists.
+| Outcome | What it means |
+|---|---|
+| `SnpError` naming a source | The ioctl or the vTPM path is wrong. It says which. |
+| Measurement disagreement | The offsets are wrong. MAA is right; fix `MEASUREMENT_OFFSET`. |
+| A verified token | It works. Flip the marker, and every figure from that VM is real. |
 
 ---
 
@@ -176,25 +167,41 @@ indistinguishable from a laptop's.
 
 ---
 
-## 4 · Write step 2, on the VM
+## 4 · Validate the reader
 
-Blocked until this exists — see the warning at the top. Roughly:
+The moment of truth, and the one thing this deployment exists to settle.
 
-- Read the SEV-SNP report. On an Azure CVM: `/dev/sev-guest` (`SNP_GET_REPORT`
-  ioctl) with the nonce as report data, or the vTPM NV index the Azure guest
-  attestation library uses.
-- POST it to the MAA endpoint from `terraform output attestation_uri` and take the
-  JWT back.
-- Return `(launch_measurement, True)` from `produce_measurement()`, and have
-  `AttestationVerifier` validate the MAA token's signature against MAA's JWKS
-  instead of the self-signed ECDSA path.
+```bash
+export TEE_BACKEND=snp-cvm
+export CRYPTO_ATTESTATION_URI="$(terraform output -raw attestation_uri)"
+confidentia keys check          # exercises the whole path: report, MAA, verify
+```
 
-`crypto/attestation.py` already separates producing evidence from verifying it, so
-this is an implementation behind an existing seam rather than a redesign.
+Three outcomes, all informative:
 
-**`crypto` is a measured package.** Changing it changes the measurement, so key
-release is refused until the new build is approved — which is the mechanism working,
-not a problem. `confidentia keys approve` after each change.
+**`SnpError: no SEV-SNP attestation report could be obtained`** — neither source
+worked, and the message names what each returned. Usually one of: the `sev-guest`
+driver is not loaded (`modprobe sev-guest`), the device node is not readable by this
+user, or `tpm2-tools` is not installed for the vTPM fallback.
+
+**`SnpError: MAA and this module disagree about the launch measurement`** — the
+reader ran and parsed the wrong bytes. MAA is authoritative; adjust
+`MEASUREMENT_OFFSET` in `crypto/snp.py` to match. This is the failure the whole
+cross-check exists to catch, and finding it here rather than in the dissertation is
+the point.
+
+**A measurement, and a token that verifies** — it works. Now:
+
+```bash
+# Only after MAA has agreed with the parsed measurement.
+sed -i 's/VALIDATED_ON_HARDWARE = False/VALIDATED_ON_HARDWARE = True/' \
+  src/confidentia/crypto/snp.py
+pytest tests/unit/test_snp.py   # the marker test now fails; update it deliberately
+```
+
+**`crypto` is a measured package**, so every edit above changes the measurement and
+key release is refused until the new build is approved. That is the mechanism
+working, not a problem. `confidentia keys approve` after each change.
 
 ---
 
@@ -264,17 +271,23 @@ these three things first:
 metadata `securityType` field is Azure's answer, not this repository's, and it needs
 no code from here.
 
-**Settles once step 2 is written:** whether attestation is real. Under `sim` the
-process measures itself and could lie; on SEV-SNP the measurement comes from
+**Settles once the reader is validated:** whether attestation is real. Under `sim`
+the process measures itself and could lie; on SEV-SNP the measurement comes from
 firmware, is signed by AMD, and is verified by MAA. Audit rows written after that
 carry `hardware_rooted = true` and mean it.
 
-**Settles once step 2 is written:** the enclave overhead, replacing a modelled
+**Settles once the reader is validated:** the enclave overhead, replacing a modelled
 ×1.206 with a measurement.
 
 **Settles nothing on its own:** the infrastructure. Standing up the resource group
-without step 2 proves the Terraform applies and the quota exists. That is worth
-knowing and is not a result.
+proves the Terraform applies and the quota exists. That is worth knowing and is not
+a result.
+
+**Does not settle, whatever happens:** whether `crypto/snp.py` is correct in the
+places this deployment does not exercise. It reads two fields of a forty-field
+structure. A validated launch measurement says those two offsets are right; it says
+nothing about the rest, and nothing else is parsed — which is why nothing else is
+parsed.
 
 **Does not settle:** the placement. That is derived from the schema contracts and
 would be identical on any hardware — which is the argument section 5.5 makes, and
