@@ -1,7 +1,8 @@
 # PROJECT_CONTEXT
 
 Handoff document for **CONFIDENTIA**. Written so development can continue without
-re-deriving anything. Current as of **Stage 12** (13 CI jobs green, 286 unit + 74 integration tests,
+re-deriving anything. Current as of **Stage 14** (13 CI jobs green plus security and release workflows,
+286 unit + 74 integration tests,
 **all five contributions delivered**, API and dashboard live, containers building,
 Prometheus and Grafana wired to the pipeline's own tables).
 
@@ -216,12 +217,12 @@ and are not meant to.
 ├── orchestration/dags/           6 DAGs + confidentia_common.py   Stages 8-9b
 ├── tests/  (conftest + 12 unit + 1 integration + 2 api)  333 tests
 ├── scripts/  (operational scripts, see §9)
-├── docs/adr/ (16 ADRs)  docs/stage-reports/ (17 reports)
+├── docs/adr/ (17 ADRs)  docs/stage-reports/ (18 reports)
 ├── frontend/                     Vite + React + TS, 9 modules (Stage 11)
 ├── docker/{backend,frontend,spark,airflow}/  four images, all built (Stage 13)
 ├── docs/api/openapi.json         Committed schema; CI fails if stale
 ├── spikes/pme/                   Stage 1 feasibility spike (still runnable, used by CI)
-├── .github/workflows/ci.yml      13 jobs
+├── .github/workflows/          ci.yml (13 jobs), security.yml, release.yml
 ├── docker-compose.yml            5 profiles; core verified up, all images build
 └── pyproject.toml
 
@@ -1080,17 +1081,18 @@ All of these are real findings or accepted costs. **None is an artefact.**
 | 11 | Dashboard: 9 modules, generated API types, 3 defects found by running it | `3733292` |
 | C5 | Placement planner: the boundary derived, costed and swept | `b91c3e0` |
 | 13 | Containers: four images built and verified; 5 defects only building found | `07a9938` |
-| 12 | Observability: 8 platform gauges from pipeline tables, 8 alerts, Grafana as code | *this session* |
+| 12 | Observability: 8 platform gauges from pipeline tables, 8 alerts, Grafana as code | `52c3491` |
+| 14 | Supply chain: scanning with a policy, SBOMs, Sigstore provenance | *this session* |
 
 ### Pending
 
 | Stage | Deliverable | Est. sessions |
 |---|---|---|
-| 14–16 | CI/CD, Terraform + Azure architecture | 1 |
+| 15–16 | Terraform + Azure architecture | 1 |
 | — | Experiments E1–E8 with graphs | 2 |
 | — | Final report, PPT, demo script, viva Q&A | 2 |
 
-**Total remaining: ~3–6 sessions.** All five contributions are delivered. What is
+**Total remaining: ~3–5 sessions.** All five contributions are delivered. What is
 left is packaging (12–13), experiments, and writing. The dashboard is done, so what remains is C5, packaging,
 experiments and writing.
 

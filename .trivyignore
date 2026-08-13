@@ -1,0 +1,17 @@
+# Vulnerabilities accepted with a reason.
+#
+# The scanner runs with `--ignore-unfixed`, so anything listed here has a fix
+# available and is being accepted anyway. That is a higher bar than silence, and
+# every entry needs a reason and a review date -- an ignore file without them is
+# how a scanner becomes decoration.
+#
+# Nothing is listed today. The unfixable findings (perl-base and linux-libc-dev in
+# the Debian bases, `ray` inside the upstream Airflow image) are excluded by
+# `--ignore-unfixed` rather than enumerated here, because listing hundreds of CVEs
+# nobody can act on would bury the ones that matter.
+#
+# Format: one CVE per line, with the reason above it. For example:
+#
+#   # CVE-0000-00000 -- reachable only through the C++ IPC reader, which the Python
+#   # bindings do not expose. Review 2026-12-01.
+#   CVE-0000-00000

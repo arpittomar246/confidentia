@@ -5,6 +5,15 @@ on:
   pull_request: {branches: [main]}
   workflow_dispatch:
 
+# Cancel a run that a newer push has superseded. The container-build job takes six
+# minutes and two of the last four pushes were a fix landing minutes after the
+# commit it fixed -- so the older run was still building images nobody would look
+# at. `main` is included deliberately: a superseded run on main tells you about a
+# commit that is no longer HEAD.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   PYTHON_VERSION: "3.11"   # PySpark 3.5 does not support 3.12+ reliably
   JAVA_VERSION: "17"       # Spark 3.5 supports Java 8/11/17 only

@@ -24,7 +24,18 @@ COPY frontend/ ./
 # environment-specific, and Vite offers no way to change it afterwards.
 RUN npm run build
 
-FROM nginx:1.27-alpine AS runtime
+# 1.31, not 1.27. Trivy found 2 CRITICAL and 33 HIGH in the 1.27-alpine base --
+# openssl 3.3.3-r0 and libxml2 2.13.4-r5, both with published fixes. Those are not
+# nginx bugs; they are an Alpine layer that stopped being rebuilt.
+#
+# 1.29 was measured too and still carried 11 fixable HIGH. 1.31 measures at **zero**
+# fixable HIGH or CRITICAL, which is why the security gate can hold this image to
+# zero rather than to a tolerance.
+#
+# Pinned to a minor version rather than floating `alpine`, so a base bump is a
+# commit someone reviewed rather than something that changes under a rebuild -- and
+# so the number above stays checkable.
+FROM nginx:1.31-alpine AS runtime
 
 COPY docker/frontend/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html

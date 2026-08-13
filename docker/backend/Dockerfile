@@ -17,6 +17,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /opt/confidentia
 
+# The build tooling that ships inside the base image, brought current. Trivy found
+# fixable HIGH findings here and every one was build machinery rather than anything
+# this project imports -- CVE-2026-24049 in `wheel`, CVE-2026-23949 in
+# `jaraco.context`. Cheap to fix and pointless to argue about.
+RUN pip install --no-cache-dir --upgrade "pip" "setuptools" "wheel>=0.46.2" "jaraco.context>=6.1.0"
+
 # Project metadata first, as its own layer: pyproject.toml changes far less often
 # than the source, so editing a router does not reinstall psycopg.
 COPY pyproject.toml README.md ./
@@ -35,6 +41,21 @@ COPY docs/api/openapi.json docs/api/openapi.json
 # because everything is already installed above and re-resolving would undo the
 # layer caching this file is arranged around.
 RUN pip install --no-cache-dir --no-deps -e .
+
+# pip removed from the runtime image, last of all.
+#
+# Two reasons, and the second is the one that matters. Trivy reported
+# `setuptools 70.3.0` in this image while site-packages held 84.0.0 -- the finding
+# was pip's own **vendored** `pkg_resources`, which the scanner detects as a
+# separate package. Removing pip removes it, and the number becomes true rather
+# than argued about.
+#
+# And a runtime container has no business installing packages: `pip install`
+# inside a running service is how a compromised process fetches its second stage.
+# The editable install above keeps working -- it is a `.pth` file, not a pip
+# feature.
+RUN pip uninstall --yes pip setuptools wheel \
+    && rm -rf /usr/local/lib/python3.11/ensurepip
 
 # Non-root. The API holds no key material and writes nothing to disk, so there is
 # no reason for it to run as root, and every reason not to given it is the one

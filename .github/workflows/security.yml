@@ -1,0 +1,148 @@
+name: Security
+
+# Weekly as well as on push, because the code not changing is exactly when a new
+# advisory lands against a dependency that has not moved. A scanner that only runs
+# on commits stops running the moment a project goes quiet -- which is when it is
+# most useful.
+on:
+  push: {branches: [main]}
+  pull_request: {branches: [main]}
+  schedule:
+    - cron: "17 6 * * 1"   # Mondays, 06:17 UTC. Off the hour to avoid the stampede.
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write   # to upload SARIF to the Security tab
+
+jobs:
+  # Python dependencies, audited against PyPI advisories.
+  #
+  # `--strict` so that a package pip-audit cannot resolve is a failure rather than
+  # a silent gap. The project's own distribution is skipped by name: it is not on
+  # PyPI and never will be.
+  dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11", cache: pip}
+      - run: pip install -e ".[dev,generators,storage,ingestion,cdc,spark,lake,api,observability,stream]"
+      - run: pip install pip-audit
+      - name: Audit installed dependencies
+        # PYSEC-2026-113 (pyarrow) is ignored with a reason, and the reason is in
+        # the advisory text itself: the use-after-free is in Arrow C++ behind
+        # `RecordBatchFileReader::PreBufferMetadata`, and upstream states the
+        # functionality "is not exposed in language bindings (Python, Ruby, C
+        # GLib), so these bindings are not vulnerable". This project is Python
+        # only. The fixed version, 23.0.1, is also outside the `pyarrow<18` pin
+        # that Spark 3.5 compatibility rests on -- so "upgrade" is a Spark
+        # compatibility exercise, not a security fix. Review when Spark 4 lands.
+        run: pip-audit --strict --ignore-vuln PYSEC-2026-113
+
+  # Container images. Scanned after building them, not against a registry: the
+  # images that matter are the ones this repository produces.
+  # Every image is scanned and every result reaches the Security tab. Only two are
+  # *gated*, and the difference is whether this repository can act on a finding.
+  #
+  # Measured on 2026-08-13, fixable HIGH/CRITICAL:
+  #
+  #   frontend   0     nginx:1.31-alpine
+  #   api        0     after bringing pip's own tooling current
+  #   spark     55     org.apache.derby, zookeeper, avro, thrift, protobuf ...
+  #   airflow  125     ray, litellm, openssl, gnutls, the Debian base ...
+  #
+  # Spark's are Java jars *inside the pyspark wheel*, and Airflow's are the
+  # upstream official image and its providers. Trivy calls them fixable because a
+  # fix exists in the upstream library -- not because this repository can apply it
+  # without vendoring a patched Spark or abandoning the official Airflow image.
+  # Gating on them would make the job permanently red, and a permanently red job is
+  # one nobody reads. Same reasoning as `--ignore-unfixed` below, and the same
+  # reasoning as the alert rules in monitoring/prometheus/alerts.yml.
+  #
+  # `gate: true` is therefore a claim: these two images are held at zero.
+  containers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {image: api, gate: true}
+          - {image: frontend, gate: true}
+          - {image: spark, gate: false}
+          - {image: airflow, gate: false}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reclaim disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+      - name: Build ${{ matrix.image }}
+        run: docker compose build ${{ matrix.image }}
+
+      # SARIF first and always, so the Security tab shows everything including the
+      # unfixable findings. The gate below is deliberately narrower than this.
+      - name: Scan (report everything)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: confidentia-${{ matrix.image }}:latest
+          format: sarif
+          output: trivy-${{ matrix.image }}.sarif
+          scanners: vuln
+        # A scan that cannot run must not silently pass, but it also must not block
+        # a release for an outage at the vulnerability database.
+        continue-on-error: true
+      - name: Upload to the Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-${{ matrix.image }}.sarif
+          category: trivy-${{ matrix.image }}
+        continue-on-error: true
+
+      # The gate, for the images this repository controls. `--ignore-unfixed` is
+      # half the design: the Debian and Alpine bases carry dozens of CVEs with no
+      # published fix -- perl-base, ncurses, linux-libc-dev -- and failing on those
+      # means red forever, which is the same as having no job at all.
+      - name: Fail on fixable HIGH/CRITICAL
+        if: matrix.gate
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: confidentia-${{ matrix.image }}:latest
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          exit-code: "1"
+          scanners: vuln
+
+      # For the two that are not gated, print the count so it is visible in the log
+      # and in the job summary rather than only in the Security tab. A number nobody
+      # sees is a number nobody argues about.
+      - name: Report (not gated)
+        if: ${{ !matrix.gate }}
+        run: |
+          echo "### ${{ matrix.image }}: reported, not gated" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Findings are inside the pyspark wheel or the upstream Airflow image." \
+            >> "$GITHUB_STEP_SUMMARY"
+          echo "See the Security tab for the full SARIF." >> "$GITHUB_STEP_SUMMARY"
+
+  # Secrets that should never have been committed. Runs on the full history rather
+  # than the diff: this repository had its history discarded once already, at
+  # Stage 1, after AES-256 test keys were committed.
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Scan history for secrets
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: secret
+          severity: HIGH,CRITICAL
+          exit-code: "1"
