@@ -218,28 +218,56 @@ if [[ "$UP" == "1" ]]; then
             && ok "alert rules loaded ($((rules - 2)) rules)" \
             || bad "alert rules did not load"
 
-        # The scrape has to succeed, not merely be configured. A target in `down`
-        # is the state this whole stage exists to make visible, so it is the check.
-        for _ in $(seq 1 20); do
-            curl -sf "${prom}/api/v1/targets" | grep -q '"health":"up".*confidentia-api\|confidentia-api.*"health":"up"' && break
-            sleep 3
-        done
-        if curl -sf "${prom}/api/v1/targets" | python3 -c "
+        # The scrape has to succeed, not merely be configured: a target stuck in
+        # `down` is the state this whole stage exists to make visible.
+        #
+        # Waited on with the same precise check that decides pass/fail, not a grep.
+        # The first version matched `confidentia-api.*"health":"up"` against the
+        # targets payload -- which is a single line containing both targets, so the
+        # *prometheus* job being up satisfied it. The loop exited after 12 seconds,
+        # before the first 30s scrape had happened, and the check then failed for
+        # real. A readiness probe that is weaker than the assertion it guards is
+        # worse than no probe.
+        api_target_up() {
+            curl -sf "${prom}/api/v1/targets" 2>/dev/null | python3 -c '
 import json, sys
-targets = json.load(sys.stdin)['data']['activeTargets']
-api = [t for t in targets if t['labels'].get('job') == 'confidentia-api']
-sys.exit(0 if api and api[0]['health'] == 'up' else 1)
-" 2>/dev/null; then
+try:
+    targets = json.load(sys.stdin)["data"]["activeTargets"]
+except Exception:
+    sys.exit(1)
+api = [t for t in targets if t["labels"].get("job") == "confidentia-api"]
+sys.exit(0 if api and api[0]["health"] == "up" else 1)
+' 2>/dev/null
+        }
+
+        # Generously longer than one 30s scrape interval plus startup.
+        for _ in $(seq 1 30); do
+            api_target_up && break
+            sleep 4
+        done
+
+        if api_target_up; then
             ok "prometheus is scraping the API"
         else
             bad "prometheus is not scraping the API"
-            curl -sf "${prom}/api/v1/targets" | head -c 400
+            curl -sf "${prom}/api/v1/targets" \
+                | python3 -c 'import json,sys; [print("      ", t["labels"].get("job"), t["health"], t.get("lastError","")) for t in json.load(sys.stdin)["data"]["activeTargets"]]' \
+                2>/dev/null || true
         fi
 
-        # The metric has to arrive in the time series database, not just be served.
-        if curl -sf --get "${prom}/api/v1/query" \
-             --data-urlencode 'query=sum(confidentia_http_requests_total)' \
-             | grep -q '"value"'; then
+        # The metric has to arrive in the time series database, not merely be
+        # served by the API. Retried for the same reason as the target check: the
+        # first sample lands one scrape interval after the target comes up.
+        metric_present() {
+            curl -sf --get "${prom}/api/v1/query" \
+                --data-urlencode 'query=sum(confidentia_http_requests_total)' 2>/dev/null \
+                | grep -q '"value"'
+        }
+        for _ in $(seq 1 12); do
+            metric_present && break
+            sleep 4
+        done
+        if metric_present; then
             ok "platform metrics queryable through prometheus"
         else
             bad "platform metrics not queryable through prometheus"
