@@ -1,0 +1,587 @@
+# CONFIDENTIA — A Confidential Lakehouse Platform
+
+**Attested, privacy-preserving data engineering on untrusted cloud infrastructure**
+
+M.Tech Major Project (MTP-2) · Arpit Tomar · M25DE2005 · IIT Jodhpur
+
+---
+
+> **A note on citations.** This document contains no references section. Every
+> factual claim in it is drawn from this project's own code, measurements and
+> commit history, and each is traceable to a stage report or an ADR. The
+> literature review and citations are the author's to add; nothing here should be
+> attributed to a source it does not name.
+
+---
+
+## Abstract
+
+Confidential computing promises that data can be processed on infrastructure the
+data owner does not trust. Most demonstrations of it are single-process
+benchmarks — an enclave doing one computation. This project asks what happens when
+the same guarantee is asked of a *whole data platform*: ingestion, change data
+capture, streaming, transformation, data quality, lineage and serving.
+
+CONFIDENTIA is that platform. It implements a two-tenant medallion architecture
+(healthcare and financial) in which the confidentiality boundary is a first-class
+design parameter rather than a wrapper. Five contributions are delivered:
+crypto-partitioned storage with per-column keys (C1), attestation-gated key release
+(C2), cryptographically verifiable lineage (C3), disclosure control on published
+aggregates (C4), and an enclave placement planner that derives where the boundary
+must fall and models what it costs (C5).
+
+The central finding is architectural rather than numerical. Applying the placement
+rule — *a stage must run inside the enclave if and only if it observes plaintext of
+a column classified PII or PHI* — shows that **tokenising direct identifiers is not
+what shrinks the boundary**. Tokenisation removes 17 of 42 protected columns between
+Bronze and Silver and moves *no stage out of the enclave*, because 25
+quasi-identifiers remain. What makes Gold's output publishable is disclosure
+control; what keeps Gold's computation inside the boundary is that disclosure
+control has not been applied yet at that point.
+
+Applying that rule also exposed a defect the platform had carried since Stage 3:
+the landing zone writes unencrypted Parquet, and a single landing file was found to
+contain 19 SSN-shaped strings.
+
+**There is no confidential-computing hardware behind this work.** The TEE layer is
+an abstraction with a simulated backend. Every number derived from it is labelled
+MODELLED in the code, the database and this report. What that means, and what it
+does not, is stated in §4.
+
+---
+
+## 1. Introduction
+
+### 1.1 Motivation
+
+A data platform running on rented infrastructure asks its owner to trust the
+operator of that infrastructure — with the hypervisor, the storage service, the
+memory of the machine. For healthcare and financial data this trust is often the
+blocking constraint rather than a preference.
+
+Hardware-based confidential computing (Intel SGX, AMD SEV-SNP) narrows that trust
+to the CPU vendor. The literature demonstrates it convincingly for isolated
+computations. It demonstrates it much less often for a *pipeline*, where data moves
+between layers, is joined, aggregated, quality-checked, and eventually published —
+and where the interesting question is not "can this computation run in an enclave"
+but "which of these computations has to".
+
+### 1.2 Research question
+
+> What does it cost, architecturally and quantitatively, to run a full
+> medallion-architecture data platform under a hardware-enforced confidentiality
+> boundary — and where in that pipeline should the boundary be drawn?
+
+The second half is the contribution. The first half is measurable only in part
+without hardware, and §4 is explicit about which part.
+
+### 1.3 Relation to MTP-1
+
+MTP-1 presented *Secure Data Analytics Using Trusted Execution Environments* — a
+single-process TEE benchmark. This work elevates that into a platform where the
+boundary is a parameter, and adds four contributions the benchmark could not
+express: verifiable provenance, disclosure control, an evaluation harness that
+scores the platform against ground truth, and the placement planner.
+
+---
+
+## 2. Contributions
+
+| | Contribution | Verified by |
+|---|---|---|
+| **C1** | Crypto-partitioned medallion storage: per-column, per-sensitivity, per-tenant encryption keys | Byte-level inspection of stored files; keyless reads refused in a separate OS process |
+| **C2** | Attestation-gated key release with four audited refusal paths | 15 recorded refusals across 347 requests |
+| **C3** | Cryptographically verifiable lineage: per-record Merkle roots, ECDSA-signed, hash-chained | Four tamper attacks, each detected *for the correct reason* |
+| **C4** | Disclosure control on Gold aggregates: k-anonymity with complementary suppression | 8,729 primary and 250 complementary suppressions on one mart |
+| **C5** | Enclave placement planner: boundary derived from contracts, cost modelled | Placement is a derivation; costs labelled MODELLED |
+
+---
+
+## 3. Architecture
+
+```
+SOURCES                 INGESTION            LANDING          BRONZE
+ generated files  ──▶  FileCollector   ──▶  lake/landing/ ──▶ encrypted Delta
+ mock REST API    ──▶  RestCollector        (PLAINTEXT —      (Parquet Modular
+ Postgres WAL     ──▶  CdcCollector          see §7.1)          Encryption)
+ Kafka topic      ──▶  Structured Streaming ──────────────────────▲
+                        (no landing; writes the SAME table)       │
+                              │                                   ▼
+                    platform.ingest_batch                      SILVER
+                    (content-addressed                 conform → validate →
+                     idempotency)                      quarantine → dedupe →
+                                                       tokenise → SCD2
+                                                            │
+    KEY BROKER ◀── attestation evidence ──┐                 ▼
+    (measurement allowlist,               │              GOLD
+     audited release)                     │     star schema (encrypted Delta)
+           │                               │                 │
+           ▼                               │     disclosure control (k=5 +
+    KEY HIERARCHY                          │     complementary suppression)
+    MEK → tenant KEK → per-class DEK       │                 │
+                                           │                 ▼
+    QUALITY ────────────────────────────────┘     gold.* marts in PostgreSQL
+    282 rules → detections → scores → gate         (aggregates only)
+```
+
+### 3.1 Layer semantics
+
+| Layer | Partition | Meaning |
+|---|---|---|
+| landing | none | Exactly what arrived, checksum-verified. **Unencrypted.** |
+| bronze | `ingest_date` | Typed, encrypted, still raw values |
+| silver | `event_date` | Conformed, deduplicated, tokenised, SCD2 |
+| gold | `event_date` | Star schema, encrypted |
+| serving | — | PostgreSQL `gold` schema: disclosure-controlled aggregates only |
+
+Bronze partitions on ingest date and Silver on event date. Bronze answers "what did
+we receive on Tuesday"; Silver answers "what happened on Tuesday".
+
+### 3.2 Scale of the implementation
+
+| | |
+|---|---|
+| Python | 19,752 lines across `src/` |
+| Tests | 360 (286 unit, 74 integration) |
+| CI | 14 jobs, plus security and release workflows |
+| Migrations | 11 forward-only SQL migrations |
+| Design records | 17 ADRs, 19 stage reports |
+| Data processed | 422,297 Bronze rows across 11 datasets, two tenants |
+
+---
+
+## 4. The honesty policy
+
+This section exists because without it every number in §5 and §6 is ambiguous.
+
+**There is no confidential-computing hardware.** The TEE layer is an abstraction
+with three backends — `sim`, `gramine-sgx`, `snp-cvm` — and it runs on `sim`.
+
+| Category | Status |
+|---|---|
+| Cryptography, storage, Spark, pipeline throughput | **MEASURED** |
+| Data quality, deduplication, disclosure suppression | **MEASURED** |
+| Enclave transition and EPC paging costs | **MODELLED** |
+
+`TeeSettings.is_measured` returns `False` under `sim`, and `measurement_label`
+returns `MODELLED`. Consuming code is required to print it. Every row in
+`platform.attestation_policy` and `platform.key_release_audit` carries
+`hardware_rooted = false`.
+
+**The consequence for C2 must be stated plainly.** Under `sim`, the code
+measurement is a SHA-256 of the source tree, produced by the same process that then
+presents it to the broker. **The process measures itself and could lie.** The
+mechanism — policy, allowlist, four refusal paths, full audit — is real and
+exercised. The *guarantee* is not. §9 sets out precisely what would change on real
+hardware.
+
+---
+
+## 5. The five contributions
+
+### 5.1 C1 — Crypto-partitioned storage
+
+Parquet Modular Encryption with a distinct AES-256-GCM key per (tenant,
+sensitivity class). PUBLIC columns are left unencrypted so predicate pushdown
+survives; PII and PHI columns are encrypted individually; the footer is encrypted,
+which is what makes the file's own metadata unreadable without a key.
+
+**Key hierarchy.** MEK → per-tenant KEK → per-sensitivity DEK, derived by
+HKDF-SHA256 rather than stored. Tenant isolation is therefore cryptographic: two
+tenants do not share a key, and one tenant's key cannot decrypt another's column.
+
+**Verification, and why it is byte-level.** The Stage 1 feasibility spike produced
+a **false pass**: the "encrypted" arm asserted only a successful round-trip, which
+an unencrypted write also satisfies. The keyless-read test reused the JVM, so
+Parquet's `KeyToolkit` cache served the key from memory and the read succeeded when
+it should have failed.
+
+The verification is now:
+
+1. Read the Parquet footer magic directly from the bytes: `PAR1` is plaintext,
+   `PARE` is an encrypted footer.
+2. Grep the raw file for values that should not appear in cleartext.
+3. Attempt a keyless read **in a separate OS process**, so no cache can serve it.
+
+This runs in CI on every push (`encryption-guarantee`).
+
+**A defect this design forced into the open.** Delta silently ignores encryption
+properties passed as DataFrameWriter options and writes plaintext — no error, no
+warning. Encryption must be set on the Hadoop Configuration. Every Bronze write now
+asserts `PARE` afterwards and raises if it is absent.
+
+### 5.2 C2 — Attestation-gated key release
+
+A key is released only against attestation evidence whose measurement appears in
+`platform.attestation_policy`, is unrevoked, permits that tenant, and whose nonce
+is fresh.
+
+**Four refusal paths, all exercised:** unknown measurement, revoked policy, tenant
+not permitted, stale or replayed evidence. Of 347 recorded requests, **15 were
+refused**, and every refusal is in `platform.key_release_audit` with its reason.
+
+`MEASURED_PACKAGES` is `crypto`, `pipelines`, `quality`, `lineage`, `evaluation`,
+`streaming`. Editing any of them changes the measurement and revokes key release
+until `confidentia keys approve` runs — which is the mechanism working, and is the
+most common cause of a refusal burst.
+
+Two defects found by reasoning rather than testing, both security-relevant:
+
+- The attestation verifier accepted **any** PEM key type, permitting key confusion.
+  It now pins to elliptic-curve.
+- `max_age_seconds or default` turned a caller's explicit `0` into 300 seconds. Now
+  `is None`.
+
+### 5.3 C3 — Verifiable lineage
+
+Every recorded table is digested into a Merkle root over per-record hashes, bound
+to the code measurement and the keys in force, ECDSA-signed, and appended to a hash
+chain in PostgreSQL. 72 entries at the time of writing.
+
+**Granularity was measured, not assumed** (`healthcare/claim_line`, 145,136 records):
+
+| Granularity | Commits to | Cost |
+|---|---|---|
+| Per run | one SHA-256 over the directory | 27 ms |
+| Per file | Merkle root over file digests | **8 ms** |
+| Per record | Merkle root over row digests | **7,330 ms** |
+
+Per-record costs ~900× per-file and is the only one that can answer "was this row
+included", which is the claim. Per-file would require handing over the file to
+prove membership.
+
+**Four tamper attacks, each detected for the correct reason** — a verifier that
+reports "broken link" when the problem is a forged signature sends an operator to
+the wrong place:
+
+| Attack | Detected as |
+|---|---|
+| Edit a signed payload | `payload altered — recomputed b9de…, stored 8ebb…` |
+| Edit a denormalised column | `column diverges from signed payload — merkle_root` |
+| Delete a mid-chain entry | `broken link — stored previous 8ebb…, expected 9215…` |
+| Edit one row in the encrypted Bronze table | `DOES NOT MATCH entry #31 … row count unchanged` |
+
+The fourth edits a real encrypted Delta table and undoes it with time travel.
+"Row count unchanged" is the point: the table is the same size, one field differs,
+and the root still moves.
+
+### 5.4 C4 — Disclosure control
+
+Gold publishes aggregates into PostgreSQL with k-anonymity at k=5, and — critically
+— **complementary suppression**. Primary suppression alone leaves a small cell
+recoverable by subtracting published cells from a published total.
+
+Measured on the published marts:
+
+| Mart | Rows | Primary suppressed | Complementary |
+|---|---|---|---|
+| Transactions daily | 11,479 | 8,729 | 250 |
+| Encounters daily | 4,477 | 1,227 | 432 |
+| Diagnosis prevalence | 263 | 86 | **0** |
+
+The third row is a finding, not an omission: a mart with primary suppression and
+*no* complementary suppression has usually not been protected. It is surfaced in
+the API and flagged in the dashboard rather than hidden.
+
+### 5.5 C5 — Enclave placement planner
+
+The package separates a **derivation** from a **model**, and the separation is the
+contribution:
+
+- `placement.py` derives which stages must be inside from the schema contracts.
+  The answer would be identical on real SGX.
+- `profile.py` gathers measured inputs: row widths from Parquet footer metadata,
+  durations from the recorded run history, row counts from signed lineage.
+- `model.py` turns those into modelled enclave costs, labelled MODELLED.
+
+**The rule:** a stage must run inside the enclave iff it observes the plaintext of a
+column classified PII or PHI.
+
+**The result.** Every stage touching tenant data is inside; only `quality.gate` and
+`api.serve` are outside. That flat answer is uninteresting until you ask *why*, and
+the planner reports it per stage:
+
+- `ingest.collect`, `bronze.write` — read raw source records; **all 42** protected
+  columns visible.
+- `silver.tokenise` — performs tokenisation, so it sees pre-token values *by
+  definition*. No placement decision can move it out.
+- `gold.*`, `quality.run`, `lineage.record` — read Silver/Gold, where 17 direct
+  identifiers are tokenised but **25 quasi-identifiers remain**.
+
+**This is the central architectural finding.** Tokenisation removes 17 of 42
+protected columns and moves nothing out of the boundary. The direct identifiers
+were never the binding constraint. What makes Gold's *output* publishable is C4;
+what keeps Gold's *computation* inside is that C4 has not been applied yet at that
+point.
+
+**Modelled cost** (MODELLED — there is no enclave):
+
+| Group | Rows | Baseline | Overhead | Factor |
+|---|---|---|---|---|
+| ingest | 60,400 | 1,247 ms | 370 ms | ×1.296 |
+| bronze | 422,297 | 3,240 ms | 769 ms | ×1.237 |
+| silver | 422,297 | 28,170 ms | 5,755 ms | ×1.204 |
+| gold | 279,299 | 70,092 ms | 14,139 ms | ×1.202 |
+| quality | 279,299 | 15,764 ms | 3,273 ms | ×1.208 |
+| lineage | 422,297 | 7,397 ms | 1,600 ms | ×1.216 |
+| **pipeline** | | **125,909 ms** | **25,906 ms** | **×1.206** |
+
+**EPC-aware partition sizing.** At the measured row width (116 B, row-weighted
+across 12 datasets) and a 128 MB EPC at 75% utilisation, one partition holds
+**867,787 rows**. Bronze is 422,297 rows, so **it already fits and partition sizing
+buys nothing today**. The sweep says it starts to matter at ~5× this volume and
+saves ~260 s at 100×, and immediately at a 32 MB EPC.
+
+Reported as a threshold, not a recommendation to repartition — the honest statement
+is "you do not need this yet, and here is when you will".
+
+---
+
+## 6. Data quality and evaluation
+
+### 6.1 The rule engine
+
+282 rules derived from the schema contracts across six dimensions — completeness,
+validity, consistency, uniqueness, integrity, timeliness — with severity weighting
+(critical 10 / major 3 / minor 1). Failing rows are **quarantined, never dropped**:
+30,951 rows are held and recoverable.
+
+### 6.2 Scoring the platform against ground truth
+
+The generators inject 11 defect families and record every one in a ground-truth
+manifest. **Isolation is enforced rather than trusted**: a CI job greps the whole
+of `src/confidentia` to prove no pipeline package can read the answer key. A
+pipeline that read it would score perfectly and mean nothing.
+
+Measured precision, recall and F1, **excluding the contaminated Bronze
+`duplicate_record` family** (see §6.3):
+
+| Tenant | Dataset | Precision | Recall | F1 |
+|---|---|---|---|---|
+| healthcare | patient | 1.000 | 0.996 | **0.998** |
+| financial | account | 1.000 | 0.983 | **0.991** |
+| healthcare | encounter | 0.834 | 1.000 | **0.910** |
+| financial | transaction | 0.837 | 0.954 | **0.891** |
+| healthcare | claim_line | 0.795 | 0.955 | **0.868** |
+
+Defect families with **no rule at all: 0**, down from 5, and held there by a CI job.
+
+### 6.3 What the evaluation harness measured first was the harness
+
+Stage 7b's initial run reported `patient` recall 0.390 and `encounter` precision
+0.053. Investigation found eight defects — in the *generator* and the *rule
+catalogue*, not in the scoring:
+
+- `_break_format` did not break formats
+- `case_inconsistency` upper-cased already-upper-case values
+- four foreign keys were never declared
+- `unit_inconsistency` covered two columns of four
+
+After Stage 7c, recall moved 0.390 → 0.997 on patient and 0.712 → 0.959 on
+transaction. **These numbers are not evidence that the rules improved.** Almost
+nothing about the rules' method changed. What changed is that the answer key now
+describes defects that exist and the catalogue covers the columns being corrupted.
+7b measured the measurement apparatus; 7c measures the rules.
+
+**The contamination that cannot be fixed.** At Bronze, a duplicate and a legitimate
+redelivery are the same bytes. Every redelivered row counts as a false positive for
+`duplicate_record` — 19,855 of `transaction`'s 20,450. Including it takes that
+dataset's F1 from 0.891 to **0.251**. The API returns both figures and names which
+to report; the dashboard shows the corrected one as the headline with the raw one
+beside it.
+
+---
+
+## 7. Experiments
+
+Six of eight measured. Full detail in `docs/experiments.md`.
+
+### 7.1 E4 — cost of Parquet Modular Encryption **[MEASURED]**
+
+3,000,000 rows, one warm-up, five interleaved repeats, arms verified by footer
+magic.
+
+| Arm | p50 | rows/s | vs plaintext |
+|---|---|---|---|
+| plaintext | 3.45 s | 869,913 | — |
+| pme | 3.59 s | 835,234 | **×1.042** |
+
+**Write overhead ×1.042; storage overhead ×1.001.**
+
+Run first at 200,000 rows it reported **×0.967 — encryption *faster***, which is
+impossible and is the same artefact the Stage 1 spike produced. It is not warm-up:
+this harness warms up, repeats and interleaves. It is scale — at 200k the write
+takes 0.85 s and Spark's fixed job cost swamps the signal. **Any encryption
+benchmark on this stack below ~1M rows measures job overhead, not encryption.**
+
+### 7.2 E2 — partition sizing **[MEASURED]**
+
+| Partitions | p50 | Mean file | Total |
+|---|---|---|---|
+| 4 | **2.76 s** | 9,279 KB | **37.1 MB** |
+| 90 | 4.70 s | 468 KB | 42.1 MB |
+| 720 | **17.36 s** | 72 KB | **51.8 MB** |
+
+**6.3× write penalty and 40% storage inflation** for identical rows. This quantifies
+the Stage 5 small-file bug (1,980 files averaging 37 KB) rather than merely
+recording that it was fixed.
+
+It sweeps partition count because the setting it was *meant* to sweep does nothing:
+`spark.databricks.delta.optimize.maxFileSize` governs `OPTIMIZE`, which this
+pipeline never runs. Sweeping it was completely flat.
+
+### 7.3 E1 — streaming against batch **[MEASURED]**
+
+| Arm | p50 | rows/s | vs batch |
+|---|---|---|---|
+| batch_file | 2.06 s | 29,143 | — |
+| streaming_kafka | 8.79 s | 6,826 | **×4.27** |
+
+Same 60,000 records into the same format. The producer sustains ~26,000 records/s,
+so the cost is entirely on the consume side.
+
+It also exposed an asymmetry: the batch arm *failed outright* on a type mismatch
+(`amount` declared string, generator writes DOUBLE) that the Kafka arm never sees,
+because JSON `from_json` coerces silently. **The streaming path accepts a type the
+batch path refuses.**
+
+### 7.4 E8 — schema drift **[MEASURED]**
+
+| Drift | Accepted | Rows nulled |
+|---|---|---|
+| baseline | yes | 0 |
+| column_added | yes | 0 — but the field is **silently dropped** |
+| column_dropped | yes | **60,000 (100%)** |
+| type_violation | yes | **60,000 (100%)** |
+| column_renamed | yes | **60,000 (100%)** |
+
+**Every drift is accepted; three of four destroy 100% of a column silently.** That
+is the design — Bronze must accept what arrived — but detection is *entirely
+downstream*. Nothing at Bronze raises or records that a source changed shape.
+
+### 7.5 E3 — blocked, and E5–E7 — never defined
+
+**E3** compares incremental against full reprocessing. The incremental arm does not
+exist: Silver and Gold are both full-refresh, as Stage 5 and Stage 6 each recorded.
+Running E3 requires building incremental processing first — pipeline work, and the
+largest remaining engineering item.
+
+**E5, E6 and E7 appear nowhere in the repository.** They were numbered in the
+original plan and never specified. Candidates are proposed in
+`docs/experiments.md`; notably, Stage 9b's lineage-granularity measurement (§5.3)
+would fit E7 accurately rather than retrospectively.
+
+---
+
+## 8. Limitations
+
+Stated as findings, because most of them were found by this project's own checks.
+
+1. **No confidential-computing hardware.** Every enclave number is MODELLED.
+   Attestation is a mechanism, not a security boundary, under `sim`.
+
+2. **The landing zone stores plaintext.** Found by C5. Landing files carry the
+   `PAR1` footer magic while Bronze carries `PARE`, and one landing `patient` file
+   was found to contain **19 SSN-shaped and 7 email-shaped strings**. 42 protected
+   columns are affected. Two remedies are recorded in ADR 0017 — encrypt landing,
+   or delete each batch once Bronze has durably committed — and **neither is
+   implemented**. This should be closed before any claim that the platform protects
+   data at rest end to end.
+
+3. **Schema drift is undetected at Bronze** (§7.4), and type drift is undetectable
+   there for almost every column because the Bronze contract declares them `string`.
+
+4. **Incremental processing does not exist.** Silver and Gold are full-refresh.
+
+5. **`crypto.column_encryption` is declared and unread.** ADR 0007 names `envelope`
+   as E4's baseline arm; the mode does not exist.
+
+6. **The Azure deployment has never been applied.** `terraform validate` passes and
+   Checkov reports 36/0, but `plan` requires credentials and has never run.
+
+7. **The Azure key release policy proves the hardware, not the code.** Any Azure
+   confidential VM meeting the claims obtains the key; pinning the workload needs
+   confidential containers.
+
+8. **No frontend tests.** The three defects found in the dashboard were found by a
+   human driving a browser, which is not repeatable.
+
+---
+
+## 9. What would change on real hardware
+
+| Today | On Azure |
+|---|---|
+| `attestation.py` — SHA-256 of the source tree | SEV-SNP report signed by AMD firmware |
+| the verifier in `attestation.py` | Microsoft Azure Attestation |
+| `broker.py` — four refusal paths | Managed HSM secure key release policy |
+| `LocalKmsClient.java` | KMS client backed by Managed HSM |
+
+**Attestation stops being self-issued.** The four refusal paths stay exactly as they
+are and become enforceable rather than voluntary. C5's modelled ×1.206 becomes a
+measurement; the *placement* does not change, because it is derived from contracts.
+
+The code change is small — configuration plus one Java class — because ADR 0007
+chose `PropertiesDrivenCryptoFactory` specifically so the KMS could be swapped.
+Nothing in `pipelines/`, `quality/`, `evaluation/` or `lineage/` changes. **That is
+the payoff for treating the boundary as a design parameter from Stage 1.**
+
+---
+
+## 10. Conclusion
+
+The project set out to ask where a confidentiality boundary should fall in a
+medallion data platform, and to measure what putting it there costs.
+
+The answer to *where* is derived rather than asserted, and it is not the answer the
+architecture implicitly assumed. Tokenising direct identifiers — the intervention
+the platform spends most effort on — does not move a single stage out of the
+enclave. Quasi-identifiers do that work, and they cannot be tokenised without
+destroying the aggregations they exist for. The lever that actually publishes data
+safely is disclosure control, applied at the boundary of publication rather than of
+computation.
+
+The answer to *what it costs* is partly measured and partly modelled, and the report
+keeps them apart. Column encryption costs 4.2% of write time and 0.1% of storage —
+measured. Running the pipeline inside an enclave is modelled at ×1.206 — and would
+become a measurement with roughly a day's work against an Azure subscription.
+
+What the project demonstrates beyond either answer is a method: **build the check
+before the claim.** The encryption guarantee is re-proved on every push because it
+once produced a false pass. The evaluation harness scores the platform against an
+answer key it is structurally forbidden from reading. The placement planner reports
+a violation in the architecture that wrote it. Six of the eight experiments produced
+a finding beyond their number — a benchmark that inverts below a million rows, a
+tuning knob that does nothing, an asymmetry between two ingestion paths, and silent
+data loss on drift.
+
+---
+
+## Appendix A — Reproducing every claim
+
+```bash
+bash scripts/rebuild_pipeline.sh        # regenerate the lake end to end
+bash scripts/verify_encryption.sh       # C1: byte-level, keyless read refused
+confidentia keys audit                  # C2: grants and the four refusal paths
+bash scripts/verify_lineage.sh          # C3: four tamper attacks
+confidentia gold disclosure             # C4: suppression counts per mart
+confidentia plan placement && confidentia plan sweep   # C5
+confidentia evaluate report             # §6: P/R/F1 against ground truth
+confidentia bench e4 && confidentia bench e2           # §7
+confidentia bench e1 && confidentia bench e8
+bash scripts/ci_local.sh                # the 14 CI jobs, locally
+```
+
+## Appendix B — Where the design decisions live
+
+17 ADRs in `docs/adr/`. The ones that constrain everything else:
+
+| ADR | Decision |
+|---|---|
+| 0006 | The TEE cost model, and what it may not claim |
+| 0007 | Column encryption strategy; the KMS seam |
+| 0008 | Synthetic data and ground-truth isolation |
+| 0016 | Serving-layer boundaries: reads Postgres, never the lake |
+| 0017 | Where the confidentiality boundary is drawn |
+| 0020 | Supply chain: scan policy and what is accepted |
+| 0021 | Azure as the cloud target, and what stays simulated |

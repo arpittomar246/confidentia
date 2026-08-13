@@ -1088,7 +1088,8 @@ All of these are real findings or accepted costs. **None is an artefact.**
 | 12 | Observability: 8 platform gauges from pipeline tables, 8 alerts, Grafana as code | `52c3491` |
 | 14 | Supply chain: scanning with a policy, SBOMs, Sigstore provenance | `f541117` |
 | 15–16 | Azure IaC + the cloud architecture: validated, Checkov clean, never applied | `ee3239d` |
-| E1/E2/E4/E8 | Experiments measured; E3 blocked, E5–E7 never defined (docs/experiments.md) | *this session* |
+| E1/E2/E4/E8 | Experiments measured; E3 blocked, E5–E7 never defined (docs/experiments.md) | `567379e` |
+| Report | Dissertation, 16-slide deck, viva Q&A, demo script (docs/report/) | *this session* |
 
 ### Pending
 
@@ -1100,7 +1101,9 @@ All of these are real findings or accepted costs. **None is an artefact.**
 **Total remaining: ~2–4 sessions. All sixteen stages and all five contributions
 are delivered.** What is left: **E1, E2, E4 and E8 are measured**; **E3 is blocked** because
 incremental Silver/Gold does not exist; E5–E7 were never specified anywhere.
-Then the report, PPT, demo script and viva prep. See docs/experiments.md.
+The report, deck, viva Q&A and demo script are written (docs/report/).
+**Remaining: add citations to the report, convert to the institute template,
+and rehearse the demo.** See docs/experiments.md and docs/report/README.md.
 
 ---
 
