@@ -262,7 +262,12 @@ jobs:
         env:
           CONFIDENTIA_DATA_ROOT: ${{ runner.temp }}/landing-interop
           CONFIDENTIA_KEYSTORE_PASSPHRASE: ci-only-throwaway-passphrase
-        run: pytest -m spark
+        # The runtime KMS client is a build artefact and is gitignored, so it has
+        # to be compiled here. The spike jar built above is a different one, in a
+        # different directory, for the spike's own probes.
+        run: |
+          bash scripts/build_kms_jar.sh
+          pytest -m spark
 
   # Determinism is load-bearing: experiment E3 compares incremental against full
   # reprocessing of the same data, and E8 replays a dataset under a drifted

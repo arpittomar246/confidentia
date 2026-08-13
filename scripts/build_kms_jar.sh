@@ -13,7 +13,16 @@ BUILD_DIR="${SRC_DIR}/build"
 JAR_PATH="${SRC_DIR}/confidentia-localkms.jar"
 
 JAVA_HOME_PATH="${CONFIDENTIA_JAVA_HOME:-${JAVA_HOME:-/usr/lib/jvm/java-17-openjdk-amd64}}"
-JARS_DIR="$("${REPO_DIR}/.venv/bin/python" -c 'import pyspark,pathlib;print(pathlib.Path(pyspark.__file__).parent/"jars")')"
+
+# The venv when there is one, otherwise whatever python has pyspark installed.
+# CI installs into the runner's interpreter and has no .venv, and hard-coding the
+# venv path made this script silently local-only -- which is how the Spark interop
+# test reached CI without its jar.
+PYTHON="${REPO_DIR}/.venv/bin/python"
+if [[ ! -x "${PYTHON}" ]]; then
+    PYTHON="$(command -v python3 || command -v python)"
+fi
+JARS_DIR="$("${PYTHON}" -c 'import pyspark,pathlib;print(pathlib.Path(pyspark.__file__).parent/"jars")')"
 
 echo "JDK        : ${JAVA_HOME_PATH}"
 echo "Spark jars : ${JARS_DIR}"
