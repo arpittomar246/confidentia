@@ -675,6 +675,26 @@ bash scripts/verify_api.sh                # live HTTP verification, needs data
 `api serve` binds `127.0.0.1` by default. The compose service sets
 `API_HOST=0.0.0.0` because it is inside a container; do not set that on the host.
 
+### The dashboard (Stage 11)
+
+```bash
+bash scripts/serve_dashboard.sh          # API + built dashboard + a token, one command
+bash scripts/serve_dashboard.sh --dev    # Vite dev server instead (needs port 5173 reachable)
+bash scripts/serve_dashboard.sh --role viewer --no-build
+```
+
+Starts the API on 8000, builds the frontend against it, serves `frontend/dist` on
+8001 with SPA history fallback and `no-store` on `index.html`, and prints a token.
+Ctrl-C stops everything.
+
+**Use this rather than `python -m http.server`.** Two things go wrong by hand: the
+default build calls `/api` and expects Vite's proxy, so a plain static server 404s
+every request; and a plain static server 404s on a reload of `/evaluation`, because
+React Router owns that path and the server does not know it.
+
+`npm run dev` is the better loop once port 5173 is reachable from Windows — it is
+not on this machine (see the environment note in §11).
+
 ### Scripts
 
 | Script | Purpose |
