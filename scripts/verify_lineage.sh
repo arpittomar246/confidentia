@@ -26,6 +26,21 @@ source .venv/bin/activate
 
 : "${CONFIDENTIA_KEYSTORE_PASSPHRASE:?set CONFIDENTIA_KEYSTORE_PASSPHRASE first}"
 
+# Claim 4 opens the encrypted Bronze table, so it needs key release, so it needs an
+# approved measurement. Checked here rather than discovered there: the failure
+# surfaces sixty seconds in, as "could not read the Delta version", which sends the
+# reader to look at Spark and Delta when the actual cause is an edit to a measured
+# package and the fix is one command. That happened, in front of nobody, which is
+# the good version of finding out.
+if ! python -m confidentia.cli keys check >/dev/null 2>&1; then
+    echo "The running code is not approved for key release, so claim 4 cannot open"
+    echo "the Bronze table. A measured package changed. Approve this build first:"
+    echo ""
+    echo "    python -m confidentia.cli keys approve"
+    echo ""
+    exit 1
+fi
+
 export PGPASSWORD="${POSTGRES_PASSWORD:-confidentia}"
 PG=(psql -qAt -h "${POSTGRES_HOST:-localhost}" -U "${POSTGRES_USER:-confidentia}"
     -d "${POSTGRES_DB:-confidentia}")

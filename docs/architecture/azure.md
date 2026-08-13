@@ -71,12 +71,12 @@ containers
 This deployment is strictly stronger than `sim` and strictly weaker than the claim
 "attestation-gated key release" implies in full. Both halves of that need saying.
 
-**The landing zone is still plaintext.** C5 found it and ADR 0017 records it: files
-are written as unencrypted Parquet before Bronze encrypts anything, and one landing
-`patient` file contained 19 SSN-shaped strings. Moving to Azure does not fix this —
-it moves the plaintext into a storage account. The Terraform bounds the exposure
-with a separate container and a one-day lifecycle rule, which is mitigation rather
-than a fix. **This should be closed before any real data is deployed.**
+**The landing zone was plaintext when this was written, and no longer is.** C5 found
+it, ADR 0017 recorded it, and ADR 0022 closed it: landing is encrypted under the same
+attestation-released, per-sensitivity keys as Bronze, at a measured ×1.014 storage
+cost. The separate container and one-day lifecycle rule in the Terraform were sized
+as mitigation for the plaintext and are now defence in depth rather than the only
+defence.
 
 **Managed HSM is expensive.** It bills per hour whether or not a key is used, and it
 is the dominant cost of this architecture by a wide margin. Key Vault Premium

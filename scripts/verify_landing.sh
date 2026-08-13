@@ -22,6 +22,19 @@ if [[ "${1:-}" == "--no-spark" ]]; then
     WITH_SPARK=0
 fi
 
+# The spark probe requests keys, so it needs an approved measurement. Checked up
+# front for the same reason verify_lineage.sh does: without it the failure arrives
+# a minute later wearing a Spark traceback, and the fix is one command.
+if [[ $WITH_SPARK -eq 1 ]] && ! python -m confidentia.cli keys check >/dev/null 2>&1; then
+    echo "The running code is not approved for key release, so the spark probe"
+    echo "cannot read the landing zone. Approve this build first:"
+    echo ""
+    echo "    python -m confidentia.cli keys approve"
+    echo ""
+    echo "Or run the byte-level probes only:  bash scripts/verify_landing.sh --no-spark"
+    exit 1
+fi
+
 failures=0
 run() {
     local probe="$1"
