@@ -1274,6 +1274,137 @@ def list_runs(
         )
 
 
+plan_app = typer.Typer(
+    help="C5 - enclave placement planner: where the boundary goes, and what it costs.",
+    no_args_is_help=True,
+)
+app.add_typer(plan_app, name="plan")
+
+
+def _modelled_banner() -> None:
+    """Printed above every costed output. Not optional.
+
+    Under the `sim` backend no enclave exists, so no cost here was observed. The
+    placement *derivation* is not affected by that -- it follows from the contracts
+    -- and the banner says which is which so the distinction survives being pasted
+    into a report.
+    """
+    settings = get_settings()
+    if settings.tee.is_measured:
+        typer.echo(f"[{settings.tee.measurement_label}] backend {settings.tee.backend.value}")
+        return
+    typer.echo(
+        f"[{settings.tee.measurement_label}] backend {settings.tee.backend.value}: "
+        "no enclave hardware. Every duration below is a model output; the placement "
+        "itself is derived from the schema contracts and does not depend on it."
+    )
+
+
+@plan_app.command("placement")
+def plan_placement() -> None:
+    """Which stages must run inside the enclave, and why.
+
+    No costs, no model: this is the derivation alone, and it would give the same
+    answer on real SGX hardware.
+    """
+    from confidentia.tee import placement as placement_module
+
+    typer.echo(f"{'stage':20s} {'verdict':8s} why")
+    for place in placement_module.place_all():
+        typer.echo(f"{place.stage.name:20s} {place.verdict.value:8s} {place.reason}")
+
+    violations = placement_module.boundary_violations()
+    if violations:
+        typer.echo("\nboundary violations:")
+        for violation in violations:
+            typer.echo(f"  {violation.location}: {violation.detail}")
+            typer.echo(f"    {violation.protected_columns} protected columns affected")
+            typer.echo(f"    remedy: {violation.remedy}")
+
+
+@plan_app.command("show")
+def plan_show(
+    json_out: Annotated[Path | None, typer.Option("--json", help="Write the full plan here.")] = None,
+) -> None:
+    """Build the plan: placement, measured inputs, and modelled cost."""
+    from confidentia.tee.planner import build_plan, weighted_bytes_per_row
+
+    _modelled_banner()
+    report = build_plan()
+
+    for warning in report.warnings:
+        typer.echo(f"  warning: {warning}")
+
+    width = weighted_bytes_per_row(report.widths)
+    typer.echo(
+        f"\nmeasured inputs: {len(report.widths)} datasets, {width} B/row uncompressed "
+        f"(row-weighted), {len(report.timings)} timed stage groups"
+    )
+    typer.echo(
+        f"EPC budget {report.model.epc_budget_bytes / 1024 / 1024:,.0f} MB "
+        f"-> {report.epc_threshold_rows:,} rows per partition"
+    )
+
+    typer.echo(f"\n{'group':10s} {'rows':>10s} {'parts':>6s} {'baseline':>11s} "
+               f"{'overhead':>10s} {'factor':>7s}  stages")
+    for group in report.recommended.groups:
+        if group.cost is None:
+            typer.echo(f"{group.group:10s} {'-':>10s} {'-':>6s} {'outside':>11s} "
+                       f"{'-':>10s} {'-':>7s}  {', '.join(group.stage_names)}")
+            continue
+        partitions = group.cost.partition_plan.partitions if group.cost.partition_plan else 0
+        typer.echo(
+            f"{group.group:10s} {group.rows:>10,} {partitions:>6} "
+            f"{group.cost.baseline_ms:>9,.0f}ms {group.cost.overhead_ms:>8,.0f}ms "
+            f"x{group.cost.factor:>6.3f}  {', '.join(group.stage_names)}"
+        )
+
+    plan = report.recommended
+    typer.echo(
+        f"\npipeline: {plan.baseline_ms:,.0f} ms measured -> {plan.enclaved_ms:,.0f} ms "
+        f"modelled inside the enclave (x{plan.factor:.3f})"
+    )
+
+    typer.echo("\nwhat would have to change to move a group out:")
+    for counterfactual in report.counterfactuals:
+        typer.echo(f"  {counterfactual.group:10s} {counterfactual.verdict}")
+
+    if json_out:
+        import json
+
+        json_out.write_text(json.dumps(report.as_dict(), indent=2), encoding="utf-8")
+        typer.echo(f"\nwrote {json_out}")
+
+
+@plan_app.command("sweep")
+def plan_sweep(
+    epc: Annotated[int | None, typer.Option(help="EPC size in MB. Defaults to the setting.")] = None,
+) -> None:
+    """At what data volume EPC-aware partition sizing starts to be worth anything.
+
+    Sweeps volume rather than EPC size: at this project's 422k rows the whole
+    working set fits in the budget, so every EPC size gives the same answer. The
+    interesting question is where that stops being true.
+    """
+    from confidentia.tee.planner import sweep_volume
+
+    _modelled_banner()
+    typer.echo(
+        f"\n{'scale':>6} {'rows':>12} {'parts':>6} {'rows/part':>11} "
+        f"{'sized':>8} {'unsized':>9} {'sizing saves':>14}"
+    )
+    for point in sweep_volume(epc_size_mb=epc):
+        typer.echo(
+            f"{point.scale:>5.0f}x {point.rows:>12,} {point.partitions:>6} "
+            f"{point.rows_per_partition:>11,} x{point.sized_factor:>6.3f} "
+            f"x{point.unsized_factor:>7.3f} {point.sizing_saves_ms:>11,.0f}ms"
+        )
+    typer.echo(
+        "\n'sizing saves' is the modelled paging cost that partitioning avoids. "
+        "Zero means the working set already fits and partitioning buys nothing."
+    )
+
+
 api_app = typer.Typer(help="The read-only serving layer.", no_args_is_help=True)
 app.add_typer(api_app, name="api")
 

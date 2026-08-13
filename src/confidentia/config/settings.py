@@ -223,8 +223,11 @@ class TeeSettings(BaseSettings):
     # Enclave Page Cache budget. Under 'sim' this is the modelled ceiling that
     # triggers simulated paging; under real backends it is read from hardware.
     epc_size_mb: int = 128
-    # Modelled cost parameters, calibrated from published microbenchmarks. These
-    # are inputs to a model, not measurements -- see docs/adr/0006.
+    # Modelled cost parameters, of the order published SGX microbenchmarks report.
+    # These are inputs to a model, not measurements, and deliberately not calibrated
+    # against this machine -- which has no SGX, so calibrating would mean fitting to
+    # the assumption under test. See docs/adr/0006 for each term and what the model
+    # is not allowed to claim; confidentia/tee/model.py consumes them.
     sim_ecall_latency_us: float = 8.0
     sim_ocall_latency_us: float = 12.0
     sim_page_fault_us: float = 50.0

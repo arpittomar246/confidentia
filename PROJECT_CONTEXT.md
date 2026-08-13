@@ -1,8 +1,8 @@
 # PROJECT_CONTEXT
 
 Handoff document for **CONFIDENTIA**. Written so development can continue without
-re-deriving anything. Current as of **Stage 11** (12 CI jobs green, 269 unit + 66
-integration tests, four of the five contributions delivered, API and dashboard live).
+re-deriving anything. Current as of **C5** (12 CI jobs green, 286 unit + 66 integration tests,
+**all five contributions delivered**, API and dashboard live).
 
 ---
 
@@ -29,7 +29,7 @@ confidentiality boundary, and where in that pipeline should the boundary be draw
 | **C2** | Attestation-gated key release | **Done** (Stage 4) |
 | **C3** | Cryptographically verifiable lineage (signed, Merkle-chained provenance) | **Done** (Stage 9b) — per-record Merkle roots, ECDSA-signed, hash-chained in Postgres |
 | **C4** | Disclosure control on Gold aggregates and DQ metrics | **Done** (Stage 6) |
-| **C5** | Enclave placement planner / EPC-aware partition sizing | **Not started** |
+| **C5** | Enclave placement planner / EPC-aware partition sizing | **Done** (C5) — derived placement, measured widths, modelled cost; found plaintext in the landing zone |
 
 ### Honesty policy (non-negotiable)
 
@@ -203,12 +203,13 @@ and are not meant to.
 │   ├── streaming/{producer,consumer,watermark}.py  588  Stage 9 Kafka path
 │   ├── lineage/{merkle,chain,recorder,verify}.py  1,421  Stage 9b, C3
 │   ├── api/{app,security,deps,errors}.py + routers/  1,832  Stage 10 serving layer
+│   ├── tee/{placement,profile,model,planner}.py      C5 enclave placement planner
 │   ├── spark/session.py          272  Session builder, PME wiring, column_keys_for_frame
 │   └── store/{db,migrations,repositories}.py + sql/  612 + 10 migrations
 ├── orchestration/dags/           6 DAGs + confidentia_common.py   Stages 8-9b
 ├── tests/  (conftest + 12 unit + 1 integration + 2 api)  333 tests
 ├── scripts/  (operational scripts, see §9)
-├── docs/adr/ (11 ADRs)  docs/stage-reports/ (14 reports)
+├── docs/adr/ (13 ADRs)  docs/stage-reports/ (15 reports)
 ├── frontend/                     Vite + React + TS, 9 modules (Stage 11)
 ├── docker/frontend/              Dockerfile + nginx.conf (Stage 11)
 ├── docs/api/openapi.json         Committed schema; CI fails if stale
@@ -219,6 +220,7 @@ and are not meant to.
 
 EMPTY (not yet built): backend/ monitoring/ infrastructure/
                        docker/{backend,spark,airflow}/
+                       src/confidentia/benchmarks/
                        orchestration/plugins/
                        src/confidentia/{benchmarks,tee}/
 
@@ -1062,88 +1064,92 @@ All of these are real findings or accepted costs. **None is an artefact.**
 | 9 | Streaming: Kafka -> the shared Bronze table, exactly-once | `317c7e3` |
 | 9b | **C3** — signed, Merkle-chained provenance; 4 tamper claims verified | `a7b48b1` |
 | 10 | Serving layer: 36 read-only endpoints, JWT auth, 3-role ladder, OpenAPI | `ab52185` |
-| 11 | Dashboard: 9 modules, generated API types, 3 defects found by running it | *this session* |
+| 11 | Dashboard: 9 modules, generated API types, 3 defects found by running it | `3733292` |
+| C5 | Placement planner: the boundary derived, costed and swept | *this session* |
 
 ### Pending
 
 | Stage | Deliverable | Est. sessions |
 |---|---|---|
-| — | **C5** — enclave placement planner | **1** |
 | 12 | Prometheus/Grafana/OTel | 1 |
 | 13–16 | Docker, CI/CD, Terraform + Azure architecture | 1–2 |
 | — | Experiments E1–E8 with graphs | 2 |
 | — | Final report, PPT, demo script, viva Q&A | 2 |
 
-**Total remaining: ~6–9 sessions.** Four of the five contributions are done; only
-C5 remains, and it is the smallest. The dashboard is done, so what remains is C5, packaging,
+**Total remaining: ~5–8 sessions.** All five contributions are delivered. What is
+left is packaging (12–13), experiments, and writing. The dashboard is done, so what remains is C5, packaging,
 experiments and writing.
 
 ---
 
-## 13. Exact next steps — Stage 12 (observability) or C5
+## 13. Exact next steps — Stage 12/13 (packaging), then the writing
 
-Two candidates, and they are independent. **C5 is the smaller and the more
-defensible in a viva**; Stage 12 is the more visible.
+**All five contributions are delivered.** What remains is packaging, experiments and
+the report — none of it research, all of it necessary.
 
-### Option A — C5, the enclave placement planner
+### Next: Stage 13 first, not Stage 12
 
-The last of the five contributions and the smallest. It is a modelling exercise on
-numbers the platform already produces: given the sensitivity classification in
-`catalog/contracts.py`, the modelled TEE cost parameters in `TeeSettings`, and the
-measured stage timings in `platform.run_summary`, decide which pipeline stages must
-run inside the enclave boundary and what that placement costs.
+`compose-validate` is a green CI job asserting a compose file that cannot be built:
+`docker/{backend,spark,airflow}/Dockerfile` do not exist. `docker/frontend/` landed
+at Stage 11 and is the template — multi-stage, a real healthcheck, and an nginx
+config whose two rules both came from observed failures.
 
-Everything it needs exists. `src/confidentia/tee/` and `src/confidentia/benchmarks/`
-are `__init__.py` only, which is where it goes.
+Do that before Stage 12, because a monitoring stack is the one thing that genuinely
+wants containers, and because a job that asserts less than its name says is worse
+than no job.
 
-**The honesty constraint is the whole difficulty.** Under `sim`, every number it
-consumes is modelled, so every number it produces is too. `TeeSettings.is_measured`
-is False and `measurement_label` returns `MODELLED`; the planner's output must carry
-that label, and the report must not present a placement recommendation as a measured
-result. It is a *model*, and saying so is what makes it defensible.
+The API image is the easy one: `pip install -e ".[api,storage]"`, `confidentia api
+serve`, `API_HOST=0.0.0.0`. Spark and Airflow are harder — both need the JDK, the
+KMS jar built by `scripts/build_kms_jar.sh`, and the keystore passphrase, which must
+arrive as a secret and not a build arg.
 
-### Option B — Stage 12, Prometheus/Grafana/OTel
+### Then Stage 12 — Prometheus/Grafana/OTel
 
-`monitoring/` is empty and `docker-compose.yml` already declares `prometheus` and
-`grafana` services with volume mounts at `./monitoring/prometheus` and
-`./monitoring/grafana` that do not exist.
+`monitoring/` is empty and compose already mounts `./monitoring/prometheus` and
+`./monitoring/grafana`. `prometheus-client` is a declared dependency and
+`api/deps.py` already times every query and logs the slow ones, so the metric is one
+registry away.
 
-The API is the natural instrumentation point — `prometheus-client` is already a
-declared dependency in the `observability` extra, and `deps.py` already measures and
-logs query duration, so the metric is one registry away. Airflow and Spark both
-expose metrics endpoints.
+Watch for the trap this project keeps hitting: a Grafana dashboard that renders is
+not evidence that anything is measured correctly. Whatever it displays should be
+traceable to a table the pipeline writes, the same rule as ADR 0016.
 
-Watch out for the same trap as `compose-validate`: a Grafana dashboard that renders
-is not evidence that anything is being measured correctly.
+### Experiments E1–E8, and what C5 changed about them
 
-### Recommended order
+C5 produced numbers that belong in the report and are cheap to regenerate:
+`confidentia plan show` and `plan sweep`. Two of them are worth a figure — the
+placement derivation, and the volume sweep showing where partition sizing starts to
+pay.
 
-**C5 first.** It completes the contribution set, which is what an evaluator counts,
-and it is one session. Stage 12 is presentation for a platform that already reports
-everything through the API and the CLI.
+**The landing-zone violation should be closed or explicitly accepted before the
+report claims data is protected at rest.** ADR 0017 records both remedies. It is a
+real hole: landing files are `PAR1`, and one patient file's raw bytes contain 19
+SSN-shaped strings.
 
-Then Stage 13 — the three missing Dockerfiles — because that is the point at which
-`compose-validate` stops asserting less than its name says.
+### Optional, and genuinely useful
 
-### Before either, one cheap thing worth doing
-
-**Allow Node through Windows Firewall.** `npm run dev` currently produces a server
-that is reachable inside WSL and invisible from Windows, on every port tried. The
-API on 8000 works because Python is allowed and Node is not. Until that is fixed the
-dashboard can only be viewed by building it and serving `frontend/dist` with
-`python -m http.server`, which is how Stage 11 was verified.
+- **A Playwright smoke test for the dashboard.** The three Stage 11 defects were
+  found by a human driving a browser, which is not repeatable. All three would have
+  been caught by signing in and asserting each module renders.
+- **Persist C5 plans.** They print or write JSON; there is no `platform.enclave_plan`
+  table and the API does not serve them, so the dashboard cannot show the boundary.
+- **Allow Node through Windows Firewall** so `npm run dev` is reachable. Until then,
+  `bash scripts/serve_dashboard.sh`.
 
 ### Still true, and still the rules
 
 1. **Never present a modelled number as a measurement.** `TeeSettings.is_measured`
-   is the switch; `MODELLED` is the label. This binds C5 completely.
+   is the switch, `MODELLED` is the label, and C5 is the largest consumer: its
+   placement is derived and its costs are modelled, and the two are kept in
+   different modules so the distinction is visible from the import list.
 2. **No second source of truth.** Every number comes from a table or view the
-   pipeline writes. This is why `/gate/blocked` reads a view, why the API
-   micro-averages in SQL, and why the dashboard computes nothing.
+   pipeline writes. Why `/gate/blocked` reads a view, why the API micro-averages in
+   SQL, why the dashboard computes nothing.
 3. **`keys approve` after editing a measured package** — `crypto/`, `pipelines/`,
-   `quality/`, `lineage/`, `evaluation/`, `streaming/`. The API and the frontend are
-   deliberately outside that boundary.
-4. **Run `scripts/ci_local.sh` before every push.** Now 12 jobs.
+   `quality/`, `lineage/`, `evaluation/`, `streaming/`. The API, the frontend and
+   `tee/` are deliberately outside that boundary: the planner reads contracts and
+   run history, never plaintext.
+4. **Run `scripts/ci_local.sh` before every push.** 12 jobs.
 
 ---
 
