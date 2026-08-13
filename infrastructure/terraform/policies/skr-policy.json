@@ -1,0 +1,22 @@
+{
+  "version": "1.0.0",
+  "anyOf": [
+    {
+      "authority": "https://REPLACE-WITH-attestation_uri.attest.azure.net",
+      "allOf": [
+        {
+          "claim": "x-ms-isolation-tee.x-ms-attestation-type",
+          "equals": "sevsnpvm"
+        },
+        {
+          "claim": "x-ms-isolation-tee.x-ms-compliance-status",
+          "equals": "azure-compliant-uvm"
+        },
+        {
+          "claim": "x-ms-isolation-tee.x-ms-sevsnpvm-is-debuggable",
+          "equals": "false"
+        }
+      ]
+    }
+  ]
+}

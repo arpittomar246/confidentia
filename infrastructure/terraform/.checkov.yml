@@ -1,0 +1,67 @@
+# Checkov policy exceptions.
+#
+# Same rule as the Trivy gate in .github/workflows/security.yml and the alert rules
+# in monitoring/prometheus/alerts.yml: a finding nobody can act on trains people to
+# ignore the channel. Every entry below has a reason, and the reason is either
+# "the check is looking for a different topology" or "this is a real gap and here
+# is why it is open" -- never "it was noisy".
+#
+# Fixed rather than skipped, because the checks were right:
+#   CKV_AZURE_190 / CKV2_AZURE_47  allow_nested_items_to_be_public = false
+#   CKV_AZURE_244                  local_user_enabled = false
+#   CKV2_AZURE_31                  NSG on the delegated data subnet
+
+framework:
+  - terraform
+
+skip-check:
+  # Storage and PostgreSQL are reached over VNet integration, not private
+  # endpoints. `public_network_access_enabled = false` on the storage account and
+  # `delegated_subnet_id` on the server mean neither has a public endpoint at all
+  # -- these checks look for an `azurerm_private_endpoint` resource specifically
+  # and cannot see that. Private endpoints would also work and would cost more;
+  # the property they buy is already held.
+  - CKV2_AZURE_33   # storage private endpoint
+  - CKV2_AZURE_57   # postgres private endpoint
+
+  # Customer-managed key for the storage account. A real gap, and it is open for a
+  # reason that is documented in modules/key_management/main.tf: a Managed HSM
+  # cannot hold a key until it has been activated with its security domain, and
+  # activation is a manual quorum ceremony that must not be automated. The Disk
+  # Encryption Set and the storage CMK both wait on that.
+  #
+  # Note what this does NOT weaken: the lake's confidentiality does not rest on
+  # storage-side encryption. Parquet Modular Encryption encrypts columns with
+  # per-tenant keys the storage service never sees, which is the threat model
+  # this project is about -- CMK protects against a stolen disk, PME against the
+  # storage service itself.
+  - CKV2_AZURE_1
+
+  # Queue and blob read logging. The lake has no queues, and blob read logging on a
+  # Delta table produces an access record per Parquet file per query -- volume that
+  # would swamp the audit trail this platform does keep, which is
+  # `platform.key_release_audit` and the signed lineage chain. Those record who
+  # obtained a key and what data existed; a blob GET log records neither.
+  - CKV_AZURE_33
+  - CKV2_AZURE_21
+
+  # "Ensure Virtual Machine Extensions are not Installed". The extension in
+  # question is Microsoft's GuestAttestation agent, which is the component that
+  # turns an SEV-SNP hardware report into an MAA token. Without it the confidential
+  # VM attests to nothing and the key release policy can never be satisfied.
+  # Removing it to satisfy this check would delete the feature the deployment
+  # exists for.
+  - CKV_AZURE_50
+
+  # Geo-redundant backups for PostgreSQL. Deliberate for a dissertation
+  # deployment: it roughly doubles backup cost, and the metadata store is
+  # reproducible -- `reset_data.sh` plus `rebuild_pipeline.sh` regenerates
+  # everything in about ten minutes. The keystore is the only irreplaceable thing
+  # in this platform and it does not live here.
+  - CKV_AZURE_136
+
+  # Storage replication. ZRS is set, which is replication; the check wants GRS or
+  # RA-GRS. Cross-region replication of a lake holding another tenant's encrypted
+  # data is a data-residency decision, not a durability one, and it is not a
+  # decision to make by default.
+  - CKV_AZURE_206

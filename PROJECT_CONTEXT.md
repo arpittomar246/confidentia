@@ -1,7 +1,8 @@
 # PROJECT_CONTEXT
 
 Handoff document for **CONFIDENTIA**. Written so development can continue without
-re-deriving anything. Current as of **Stage 14** (13 CI jobs green plus security and release workflows,
+re-deriving anything. Current as of **Stage 16 — all sixteen stages complete** (14 CI jobs green plus
+security and release workflows,
 286 unit + 74 integration tests,
 **all five contributions delivered**, API and dashboard live, containers building,
 Prometheus and Grafana wired to the pipeline's own tables).
@@ -228,7 +229,10 @@ and are not meant to.
 
 ├── monitoring/{prometheus,grafana}/  scrape config, 8 alerts, dashboard as code
 
-EMPTY (not yet built): backend/ infrastructure/
+├── infrastructure/terraform/     Azure IaC: validated + Checkov clean, never applied
+├── docs/architecture/azure.md    what would replace each simulated component
+
+EMPTY (not yet built): backend/
                        src/confidentia/benchmarks/
                        orchestration/plugins/
                        src/confidentia/{benchmarks,tee}/
@@ -1082,19 +1086,19 @@ All of these are real findings or accepted costs. **None is an artefact.**
 | C5 | Placement planner: the boundary derived, costed and swept | `b91c3e0` |
 | 13 | Containers: four images built and verified; 5 defects only building found | `07a9938` |
 | 12 | Observability: 8 platform gauges from pipeline tables, 8 alerts, Grafana as code | `52c3491` |
-| 14 | Supply chain: scanning with a policy, SBOMs, Sigstore provenance | *this session* |
+| 14 | Supply chain: scanning with a policy, SBOMs, Sigstore provenance | `f541117` |
+| 15–16 | Azure IaC + the cloud architecture: validated, Checkov clean, never applied | *this session* |
 
 ### Pending
 
 | Stage | Deliverable | Est. sessions |
 |---|---|---|
-| 15–16 | Terraform + Azure architecture | 1 |
 | — | Experiments E1–E8 with graphs | 2 |
 | — | Final report, PPT, demo script, viva Q&A | 2 |
 
-**Total remaining: ~3–5 sessions.** All five contributions are delivered. What is
-left is packaging (12–13), experiments, and writing. The dashboard is done, so what remains is C5, packaging,
-experiments and writing.
+**Total remaining: ~2–4 sessions. All sixteen stages and all five contributions
+are delivered.** What is left is not build work: experiments E1–E8 with graphs,
+and the report, PPT, demo script and viva preparation.
 
 ---
 

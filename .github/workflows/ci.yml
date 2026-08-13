@@ -173,6 +173,29 @@ jobs:
       - run: git diff --exit-code src/api/schema.d.ts
       - run: npm run build
 
+  # The Terraform has never been applied -- there is no Azure subscription behind
+  # this project -- so this job checks everything that can be checked without one:
+  # formatting, the provider schema, and static security policy. `plan` needs
+  # credentials and is deliberately absent rather than faked.
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run: {working-directory: infrastructure/terraform}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: {terraform_version: "1.9.8", terraform_wrapper: false}
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+      # Checkov as a pinned container, for the same reason Trivy is in
+      # security.yml: it is the same command a developer runs by hand, and the
+      # version is one this project has actually used.
+      - name: Policy scan
+        run: |
+          docker run --rm -v "$PWD:/tf" bridgecrew/checkov:3.2.334 \
+            -d /tf --config-file /tf/.checkov.yml --compact --quiet --output cli
+
   # Two dependencies were once installed by hand and never declared, so the project
   # worked locally and was uninstallable everywhere else. Needs no install step: it
   # reads the AST and pyproject.toml only.

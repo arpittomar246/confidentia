@@ -70,3 +70,15 @@ desktop.ini
 .vscode/*
 !.vscode/settings.json.example
 frontend/*.tsbuildinfo
+
+# --- Terraform ---
+# The provider plugin cache: hundreds of megabytes of downloaded binaries, one of
+# which is large enough that GitHub's pre-receive hook rejects the push outright.
+# `terraform init` rebuilds it from the lock file.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+# Real values for variables that have no defaults on purpose -- the HSM
+# administrators and an operator's SSH key.
+*.auto.tfvars
