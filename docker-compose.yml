@@ -120,10 +120,14 @@ services:
     networks: [confidentia]
 
   frontend:
-    build: {context: ./frontend, dockerfile: ../docker/frontend/Dockerfile}
+    # Context is the repo root, not ./frontend: the build needs
+    # docs/api/openapi.json, which is where the API client's types come from.
+    build: {context: ., dockerfile: docker/frontend/Dockerfile}
     profiles: [core, demo]
-    environment:
-      VITE_API_BASE_URL: http://localhost:8000
+    # No VITE_API_BASE_URL. Vite inlines that at *image build* time, so setting it
+    # here would be silently ignored -- and it is not needed: nginx proxies /api to
+    # the api service, which makes the console same-origin and removes CORS from
+    # the containerised path entirely.
     ports: ["5173:5173"]
     depends_on: [api]
     deploy:

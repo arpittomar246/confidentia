@@ -141,6 +141,29 @@ jobs:
       - run: pip install -e ".[dev,generators,storage,ingestion,spark,api]"
       - run: python scripts/export_openapi.py --check
 
+  # The dashboard's types are generated from the committed OpenAPI schema, so a
+  # backend response shape that changes without a re-export shows up here as a
+  # type error rather than as a blank panel. `tsc -b` is the whole check: there is
+  # no frontend test suite, and claiming one in a job name would be worse than not
+  # having it.
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run: {working-directory: frontend}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      # Regenerate rather than trusting the committed types: this is what catches a
+      # schema change that nobody propagated.
+      - run: npx openapi-typescript ../docs/api/openapi.json -o src/api/schema.d.ts
+      - run: git diff --exit-code src/api/schema.d.ts
+      - run: npm run build
+
   # Two dependencies were once installed by hand and never declared, so the project
   # worked locally and was uninstallable everywhere else. Needs no install step: it
   # reads the AST and pyproject.toml only.

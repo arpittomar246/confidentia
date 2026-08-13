@@ -11,7 +11,9 @@ place and logged when it crosses ``api.slow_query_ms``.
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Annotated, Any, cast
 
 import psycopg
@@ -48,8 +50,35 @@ def _run(fn: Any, sql: Any, params: Any) -> Any:
             )
 
 
+def _json_number(value: Any) -> Any:
+    """Turn a Postgres ``numeric`` into a JSON number.
+
+    psycopg maps ``numeric`` to ``Decimal``, and both FastAPI and Pydantic serialise
+    a ``Decimal`` as a **string** to preserve exact precision. The result is that
+    ``duration_ms`` arrives as ``"2.901000"`` and every consumer has to parse it --
+    which the dashboard did not, and found out in the browser rather than in a test,
+    because a response full of stringified numbers is still a 200.
+
+    Integral values become ``int`` and the rest become ``float``. That is a real
+    precision decision, not a formatting one: float64 carries 15-17 significant
+    digits, which covers every ``numeric`` this API serves -- millisecond durations,
+    row-count aggregates from ``sum()``, and ratios in [0, 1]. It would **not** be
+    safe for exact monetary values, and there are none here: ``publish_mart`` types
+    mart columns as BIGINT or DOUBLE PRECISION and never NUMERIC. If a monetary
+    ``numeric`` column is ever served, it needs a string and an explicit contract,
+    not this.
+    """
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    return value
+
+
+def _normalise(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{key: _json_number(value) for key, value in row.items()} for row in rows]
+
+
 def fetch_all(sql: str, params: Any = None) -> list[dict[str, Any]]:
-    return list(_run(db.fetch_all, sql, params))
+    return _normalise(_run(db.fetch_all, sql, params))
 
 
 def fetch_all_composed(statement: Composable, params: Any = None) -> list[dict[str, Any]]:
@@ -68,11 +97,12 @@ def fetch_all_composed(statement: Composable, params: Any = None) -> list[dict[s
             # The pool sets dict_row, which psycopg's stubs do not model.
             return cast("list[dict[str, Any]]", cur.fetchall())
 
-    return list(_run(_execute, statement, params))
+    return _normalise(_run(_execute, statement, params))
 
 
 def fetch_one(sql: str, params: Any = None) -> dict[str, Any] | None:
-    return _run(db.fetch_one, sql, params)
+    row = _run(db.fetch_one, sql, params)
+    return None if row is None else _normalise([row])[0]
 
 
 @dataclass(frozen=True)

@@ -67,31 +67,65 @@ def summary(tenant: TenantQuery = None) -> dict[str, Any]:
     Averaging per-family F1 weights a family with three defects the same as one with
     four hundred. Summing TP/FP/FN and dividing once is the micro-average, and it is
     the number that answers "how good is the quality layer on this dataset".
+
+    **Two micro-averages are returned, and the second is the honest one.** At Bronze
+    a duplicate and a legitimate redelivery are byte-identical, so every redelivered
+    row counts as a false positive for ``duplicate_record`` -- 19,855 of them on
+    ``financial/transaction`` alone, which drags that dataset's precision from 0.84
+    to 0.14. That number measures the layer's blindness, not the rules.
+
+    The exclusion is computed here rather than left to callers. A client that had to
+    subtract the contaminated family itself would be computing a metric, which is
+    exactly what ADR 0016 forbids -- and the first client that forgot would publish
+    0.14 as a result.
     """
     where, params = optional_filters({"tenant": tenant})
     return {
         "items": fetch_all(
             f"""
-            WITH counted AS (
+            WITH flagged AS (
+                SELECT *, (layer = 'bronze' AND family = %s) AS contaminated
+                  FROM platform.dq_evaluation_latest WHERE 1=1 {where}
+            ), counted AS (
                 SELECT tenant, dataset, layer,
                        sum(true_positives)  AS tp,
                        sum(false_positives) AS fp,
                        sum(false_negatives) AS fn,
+                       sum(true_positives)  FILTER (WHERE NOT contaminated) AS tp_clean,
+                       sum(false_positives) FILTER (WHERE NOT contaminated) AS fp_clean,
+                       sum(false_negatives) FILTER (WHERE NOT contaminated) AS fn_clean,
                        count(*) FILTER (WHERE NOT rule_exists) AS families_uncovered,
+                       count(*) FILTER (WHERE contaminated)    AS families_excluded,
                        count(*) AS families
-                  FROM platform.dq_evaluation_latest WHERE 1=1 {where}
-                 GROUP BY 1, 2, 3
+                  FROM flagged GROUP BY 1, 2, 3
             )
-            SELECT tenant, dataset, layer, tp, fp, fn, families, families_uncovered,
+            SELECT tenant, dataset, layer, tp, fp, fn,
+                   families, families_uncovered, families_excluded,
                    CASE WHEN tp + fp > 0 THEN tp::float / (tp + fp) END AS precision,
                    CASE WHEN tp + fn > 0 THEN tp::float / (tp + fn) END AS recall,
                    CASE WHEN 2 * tp + fp + fn > 0
-                        THEN (2.0 * tp) / (2 * tp + fp + fn) END AS f1
+                        THEN (2.0 * tp) / (2 * tp + fp + fn) END AS f1,
+                   CASE WHEN tp_clean + fp_clean > 0
+                        THEN tp_clean::float / (tp_clean + fp_clean) END AS precision_excl,
+                   CASE WHEN tp_clean + fn_clean > 0
+                        THEN tp_clean::float / (tp_clean + fn_clean) END AS recall_excl,
+                   CASE WHEN 2 * tp_clean + fp_clean + fn_clean > 0
+                        THEN (2.0 * tp_clean) / (2 * tp_clean + fp_clean + fn_clean)
+                        END AS f1_excl
               FROM counted ORDER BY tenant, dataset, layer
             """,
-            params,
+            [_CONTAMINATED_FAMILY, *params],
         ),
         "method": "micro-average over defect families",
+        "excluded_from_excl_columns": {
+            "layer": "bronze",
+            "family": _CONTAMINATED_FAMILY,
+            "why": (
+                "At Bronze a duplicate and a legitimate redelivery are the same bytes, "
+                "so this family's false positives measure the layer, not the rules. "
+                "Prefer the *_excl columns when reporting rule quality."
+            ),
+        },
     }
 
 

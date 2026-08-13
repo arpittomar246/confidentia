@@ -195,6 +195,42 @@ def test_run_list_does_not_leak_error_messages(
         assert "error_message" not in item
 
 
+def test_numeric_columns_are_json_numbers_not_strings(
+    client: TestClient, auth: dict[str, dict[str, str]]
+) -> None:
+    """Postgres ``numeric`` becomes ``Decimal``, which serialises as a **string**.
+
+    Found in a browser, not here: `"duration_ms": "2.901000"` is still a 200, so
+    every status-code assertion in this file passed while the dashboard threw
+    `toFixed is not a function`. These are the columns that come back as ``numeric``
+    -- from the column type itself, or from ``sum()`` over a bigint.
+    """
+    numeric_fields = {
+        "duration_ms",
+        "rejection_rate",
+        "median_duration_ms",
+        "max_duration_ms",
+        "records_written",
+        "rows_ingested",
+        "bytes_ingested",
+    }
+
+    def check(payload: object, where: str) -> None:
+        if isinstance(payload, dict):
+            for key, value in payload.items():
+                if key in numeric_fields and value is not None:
+                    assert isinstance(value, int | float) and not isinstance(value, bool), (
+                        f"{where}.{key} is {type(value).__name__} {value!r}, expected a JSON number"
+                    )
+                check(value, f"{where}.{key}")
+        elif isinstance(payload, list):
+            for index, item in enumerate(payload):
+                check(item, f"{where}[{index}]")
+
+    for path in ("/runs?limit=5", "/runs/stats", "/ingestion/summary"):
+        check(client.get(path, headers=auth["auditor"]).json(), path)
+
+
 def test_lineage_verify_declares_what_it_did_not_check(
     client: TestClient, auth: dict[str, dict[str, str]]
 ) -> None:
@@ -209,6 +245,24 @@ def test_evaluation_carries_the_duplicate_record_caveat(
     """Bronze cannot tell a duplicate from a redelivery; the number needs the caveat."""
     body = client.get("/evaluation/latest", headers=auth["viewer"]).json()
     assert any(c["applies_to"]["family"] == "duplicate_record" for c in body["caveats"])
+
+
+def test_evaluation_summary_reports_a_decontaminated_micro_average(
+    client: TestClient, auth: dict[str, dict[str, str]]
+) -> None:
+    """The raw micro-average is not a measure of rule quality at Bronze.
+
+    Every legitimate redelivery counts as a false positive for `duplicate_record`
+    there — 19,855 of them on financial/transaction, taking that dataset's F1 from
+    0.837 to 0.251. The endpoint therefore returns both, and says which to report,
+    so no client has to know this and none has to compute it.
+    """
+    body = client.get("/evaluation/summary", headers=auth["viewer"]).json()
+    assert body["excluded_from_excl_columns"]["family"] == "duplicate_record"
+    assert body["excluded_from_excl_columns"]["layer"] == "bronze"
+    for row in body["items"]:
+        for column in ("precision_excl", "recall_excl", "f1_excl", "families_excluded"):
+            assert column in row, f"{column} missing from /evaluation/summary"
 
 
 def test_mart_payloads_warn_about_suppression(

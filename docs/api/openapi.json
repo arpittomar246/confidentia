@@ -559,7 +559,7 @@
     },
     "/evaluation/summary": {
       "get": {
-        "description": "Aggregated from the confusion-matrix counts, not by averaging F1.\n\nAveraging per-family F1 weights a family with three defects the same as one with\nfour hundred. Summing TP/FP/FN and dividing once is the micro-average, and it is\nthe number that answers \"how good is the quality layer on this dataset\".",
+        "description": "Aggregated from the confusion-matrix counts, not by averaging F1.\n\nAveraging per-family F1 weights a family with three defects the same as one with\nfour hundred. Summing TP/FP/FN and dividing once is the micro-average, and it is\nthe number that answers \"how good is the quality layer on this dataset\".\n\n**Two micro-averages are returned, and the second is the honest one.** At Bronze\na duplicate and a legitimate redelivery are byte-identical, so every redelivered\nrow counts as a false positive for ``duplicate_record`` -- 19,855 of them on\n``financial/transaction`` alone, which drags that dataset's precision from 0.84\nto 0.14. That number measures the layer's blindness, not the rules.\n\nThe exclusion is computed here rather than left to callers. A client that had to\nsubtract the contaminated family itself would be computing a metric, which is\nexactly what ADR 0016 forbids -- and the first client that forgot would publish\n0.14 as a result.",
         "operationId": "summary_evaluation_summary_get",
         "parameters": [
           {

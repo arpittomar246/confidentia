@@ -1,8 +1,8 @@
 # PROJECT_CONTEXT
 
 Handoff document for **CONFIDENTIA**. Written so development can continue without
-re-deriving anything. Current as of **Stage 9b** (10 CI jobs green, 251 unit + 12
-integration tests, four of the five contributions delivered).
+re-deriving anything. Current as of **Stage 11** (12 CI jobs green, 269 unit + 66
+integration tests, four of the five contributions delivered, API and dashboard live).
 
 ---
 
@@ -208,14 +208,17 @@ and are not meant to.
 ├── orchestration/dags/           6 DAGs + confidentia_common.py   Stages 8-9b
 ├── tests/  (conftest + 12 unit + 1 integration + 2 api)  333 tests
 ├── scripts/  (operational scripts, see §9)
-├── docs/adr/ (11 ADRs)  docs/stage-reports/ (13 reports)
+├── docs/adr/ (11 ADRs)  docs/stage-reports/ (14 reports)
+├── frontend/                     Vite + React + TS, 9 modules (Stage 11)
+├── docker/frontend/              Dockerfile + nginx.conf (Stage 11)
 ├── docs/api/openapi.json         Committed schema; CI fails if stale
 ├── spikes/pme/                   Stage 1 feasibility spike (still runnable, used by CI)
-├── .github/workflows/ci.yml      11 jobs
+├── .github/workflows/ci.yml      12 jobs
 ├── docker-compose.yml            5 profiles (syntax-validated only; Dockerfiles missing)
 └── pyproject.toml
 
-EMPTY (not yet built): backend/ frontend/ docker/ monitoring/ infrastructure/
+EMPTY (not yet built): backend/ monitoring/ infrastructure/
+                       docker/{backend,spark,airflow}/
                        orchestration/plugins/
                        src/confidentia/{benchmarks,tee}/
 
@@ -729,17 +732,17 @@ For the UI: `airflow scheduler` and `airflow webserver --port 8080` in separate
 shells, **both with the passphrase in their environment** — `BashOperator`
 inherits it, and the platform has no fallback for it anywhere.
 
-### CI — 11 jobs, all green
+### CI — 12 jobs, all green
 
 `lint` (ruff + mypy) · `unit-tests` · **`integration-tests`** ·
 `ground-truth-isolation` · `plan-rule-coverage` · `dag-cli-contract` ·
-`declared-dependencies` · **`openapi-schema`** · `encryption-guarantee` ·
+`declared-dependencies` · **`openapi-schema`** · **`frontend`** · `encryption-guarantee` ·
 `generator-determinism` · `compose-validate`
 
 `compose-validate` asserts less than its name suggests: `docker compose config`
 checks syntax and interpolation only, so it passes even though
-`docker/{backend,frontend,spark,airflow}/Dockerfile` do not exist. Those are
-Stage 13; until then no compose profile can actually be built.
+`docker/{backend,spark,airflow}/Dockerfile` do not exist (frontend's does, as of
+Stage 11). Those are Stage 13; until then no compose profile can be built.
 
 `integration-tests` runs against a `postgres:18` service container and applies all
 migrations to an **empty** database first. That last part is the point: the tests
@@ -1038,119 +1041,89 @@ All of these are real findings or accepted costs. **None is an artefact.**
 | 8+ | Attested boundary widened, integration tests in CI, keystore backup | `f63b5c3` |
 | 9 | Streaming: Kafka -> the shared Bronze table, exactly-once | `317c7e3` |
 | 9b | **C3** — signed, Merkle-chained provenance; 4 tamper claims verified | `a7b48b1` |
-| 10 | Serving layer: 36 read-only endpoints, JWT auth, 3-role ladder, OpenAPI | *this session* |
+| 10 | Serving layer: 36 read-only endpoints, JWT auth, 3-role ladder, OpenAPI | `ab52185` |
+| 11 | Dashboard: 9 modules, generated API types, 3 defects found by running it | *this session* |
 
 ### Pending
 
 | Stage | Deliverable | Est. sessions |
 |---|---|---|
-| **11** | **React/TS dashboard, 9 modules** | **3–4** |
+| — | **C5** — enclave placement planner | **1** |
 | 12 | Prometheus/Grafana/OTel | 1 |
 | 13–16 | Docker, CI/CD, Terraform + Azure architecture | 1–2 |
-| — | **C5** — enclave placement planner | 1 |
 | — | Experiments E1–E8 with graphs | 2 |
 | — | Final report, PPT, demo script, viva Q&A | 2 |
 
-**Total remaining: ~9–13 sessions.** Four of the five contributions are done; only
-C5 remains, and it is the smallest. Stage 11 is the largest remaining block and the
-most cuttable — the platform and every contribution stand without it.
+**Total remaining: ~6–9 sessions.** Four of the five contributions are done; only
+C5 remains, and it is the smallest. The dashboard is done, so what remains is C5, packaging,
+experiments and writing.
 
 ---
 
-## 13. Exact next steps — Stage 11 (the dashboard)
+## 13. Exact next steps — Stage 12 (observability) or C5
 
-**Goal:** a React/TypeScript dashboard over the Stage 10 API. Nothing else is
-blocked on it, and it is the largest and most cuttable block remaining — so it is
-next because the four contributions and the platform are done, not because it is
-load-bearing.
+Two candidates, and they are independent. **C5 is the smaller and the more
+defensible in a viva**; Stage 12 is the more visible.
 
-### Start here
+### Option A — C5, the enclave placement planner
 
-`docs/api/openapi.json` is committed and CI keeps it current. Generate the client
-from it (`openapi-typescript` + a thin fetch wrapper, or `orval`); do not hand-write
-request types. A route or response shape that changes shows up as a type error.
+The last of the five contributions and the smallest. It is a modelling exercise on
+numbers the platform already produces: given the sensitivity classification in
+`catalog/contracts.py`, the modelled TEE cost parameters in `TeeSettings`, and the
+measured stage timings in `platform.run_summary`, decide which pipeline stages must
+run inside the enclave boundary and what that placement costs.
 
-`confidentia api routes` prints every path with the role it needs — that listing is
-the navigation map, and it is read from the real dependency tree.
+Everything it needs exists. `src/confidentia/tee/` and `src/confidentia/benchmarks/`
+are `__init__.py` only, which is where it goes.
 
-### The nine modules, and what each reads
+**The honesty constraint is the whole difficulty.** Under `sim`, every number it
+consumes is modelled, so every number it produces is too. `TeeSettings.is_measured`
+is False and `measurement_label` returns `MODELLED`; the planner's output must carry
+that label, and the report must not present a placement recommendation as a measured
+result. It is a *model*, and saying so is what makes it defensible.
 
-| Module | Endpoints | Minimum role |
-|---|---|---|
-| Overview | `/meta`, `/runs/stats`, `/quality/scores/latest`, `/gate/blocked` | viewer |
-| Pipeline runs | `/runs`, `/runs/{id}` | viewer |
-| Data quality | `/quality/scores`, `/rules`, `/failures`, `/freshness` | viewer |
-| Evaluation | `/evaluation/latest`, `/summary`, `/coverage` | viewer |
-| Promotion gate | `/gate/blocked`, `/decisions`, `/overrides` | viewer / operator |
-| Marts | `/marts`, `/marts/{name}`, `/marts/{name}/schema` | viewer |
-| Ingestion | `/ingestion/batches`, `/watermarks`, `/summary` | operator |
-| Lineage | `/lineage/head`, `/latest`, `/entries`, `/verify`, `/entries/{seq}` | operator / auditor |
-| Audit | `/audit/key-releases`, `/attestation-policy`, `/disclosure`, `/restatements` | auditor |
+### Option B — Stage 12, Prometheus/Grafana/OTel
 
-A 403 is a normal response for a viewer, not an error state. Render the module with
-an explanation of which role it needs; do not show a broken panel or a toast.
+`monitoring/` is empty and `docker-compose.yml` already declares `prometheus` and
+`grafana` services with volume mounts at `./monitoring/prometheus` and
+`./monitoring/grafana` that do not exist.
 
-### Five things the UI must render honestly
+The API is the natural instrumentation point — `prometheus-client` is already a
+declared dependency in the `observability` extra, and `deps.py` already measures and
+logs query duration, so the metric is one registry away. Airflow and Spark both
+expose metrics endpoints.
 
-These are not styling notes. Each is a claim the platform is careful about, and a
-dashboard is where careful claims get flattened into a green tick.
+Watch out for the same trap as `compose-validate`: a Grafana dashboard that renders
+is not evidence that anything is being measured correctly.
 
-1. **`/meta` returns `tee.label`.** Under the `sim` backend it is `MODELLED`. The
-   word "attested" must not appear anywhere in the UI without that qualifier
-   visible in the same view.
-2. **A NULL in a mart is usually suppression, not missing data.** `/marts` payloads
-   carry `note` saying so. Render blanked cells as *suppressed*, never as `0`, `—`
-   meaning absent, or an interpolated value.
-3. **`/evaluation/latest` rows carry `rule_exists`.** A family with no rule is not a
-   bad score; it is an uncovered family. Show it as its own state.
-4. **`/evaluation/latest` carries a `caveats` array.** The `duplicate_record` family
-   at Bronze is contaminated by redelivery. Attach the caveat to the number, not to
-   a footnote at the bottom of the page.
-5. **`/lineage/verify` returns `scope.lake_contents_rehashed: false`.** A green
-   "lineage verified" badge that does not say what was *not* checked is a lie by
-   omission. Deep verification is CLI-only (ADR 0016).
+### Recommended order
 
-### Design questions to settle first
+**C5 first.** It completes the contribution set, which is what an evaluator counts,
+and it is one session. Stage 12 is presentation for a platform that already reports
+everything through the API and the CLI.
 
-1. **Where the token lives.** `localStorage` is XSS-exfiltratable; in-memory means a
-   refresh logs the user out. For a dev-mode dashboard against `AUTH_MODE=local`,
-   in-memory plus a paste-the-token screen is honest and has no failure mode worth
-   engineering around. Do not build a login form against a user table — there isn't
-   one, and there must not be.
-2. **Polling or not.** There is no websocket and no SSE endpoint. Interval polling
-   on the Overview module only, and manual refresh elsewhere, is the cheap answer;
-   anything more wants an endpoint that does not exist yet.
-3. **How much charting.** Recharts is enough for scores over time and the confusion
-   matrix. Resist a chart library that ships a bundle bigger than the platform.
+Then Stage 13 — the three missing Dockerfiles — because that is the point at which
+`compose-validate` stops asserting less than its name says.
 
-### Constraints that will bite
+### Before either, one cheap thing worth doing
 
-- **`frontend/` must not be inside OneDrive** — the same rule as `data_root`, for
-  the same reason: `node_modules` is tens of thousands of small files and OneDrive
-  will sync-scan every one. The repo already lives in WSL2, which is correct; keep
-  `npm install` there and never run it from a Windows path.
-- **Node is not installed** in the WSL distro yet. It is not in `bootstrap_wsl.sh`.
-- **Vite's dev server is already whitelisted** in `api.cors_origins`
-  (`http://localhost:5173`, `http://127.0.0.1:5173`). `allow_credentials` is False
-  and the API authenticates by header, so do not reach for cookies.
-- **7.4 GB of RAM.** A Vite dev server plus the API plus Postgres is fine; a Vite
-  dev server plus Spark is not. Do not expect to run a pipeline and the dashboard
-  at once.
+**Allow Node through Windows Firewall.** `npm run dev` currently produces a server
+that is reachable inside WSL and invisible from Windows, on every port tried. The
+API on 8000 works because Python is allowed and Node is not. Until that is fixed the
+dashboard can only be viewed by building it and serving `frontend/dist` with
+`python -m http.server`, which is how Stage 11 was verified.
 
-### Deliverables
+### Still true, and still the rules
 
-- `frontend/` — Vite + React + TypeScript, generated API client, nine modules
-- Role-aware navigation driven by the roles in the token
-- `docker/frontend/Dockerfile` (Stage 13 also needs `docker/backend/Dockerfile`)
-- `docs/stage-reports/stage-11.md`
-
-### Do not
-
-- Compute a metric client-side that the API could return. The API already refuses to
-  do this (ADR 0016) and the reason is the same one rung down: a number the
-  dashboard derives is a number that will disagree with the CLI.
-- Add a write path. The API refuses non-GET with `405 read_only`; a UI button that
-  posts is a UI button that produces an error dialog.
+1. **Never present a modelled number as a measurement.** `TeeSettings.is_measured`
+   is the switch; `MODELLED` is the label. This binds C5 completely.
+2. **No second source of truth.** Every number comes from a table or view the
+   pipeline writes. This is why `/gate/blocked` reads a view, why the API
+   micro-averages in SQL, and why the dashboard computes nothing.
+3. **`keys approve` after editing a measured package** — `crypto/`, `pipelines/`,
+   `quality/`, `lineage/`, `evaluation/`, `streaming/`. The API and the frontend are
+   deliberately outside that boundary.
+4. **Run `scripts/ci_local.sh` before every push.** Now 12 jobs.
 
 ---
 
