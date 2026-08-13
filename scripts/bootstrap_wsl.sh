@@ -66,10 +66,24 @@ if [[ ! -d .venv ]]; then
 fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
+
+# A venv created by `uv venv` has no pip in it, and `pip install` then fails with
+# "command not found" -- which is confusing halfway through a bootstrap. venvs made
+# by this script do have pip; this only matters when re-running against one that
+# was created another way.
+if ! python -m pip --version >/dev/null 2>&1; then
+    warn "This venv has no pip (created by uv?). Bootstrapping one with ensurepip."
+    python -m ensurepip --upgrade >/dev/null
+fi
 python -m pip install --upgrade pip --quiet
 
-log "Installing Python dependencies (spark + dev extras)"
-pip install --quiet -e ".[spark,generators,dev]"
+# Every extra the project actually runs, not just Stage 1's. Installing a subset
+# produces an environment where the CLI imports but half its subcommands raise
+# ImportError at the point of use -- `confidentia api serve` without [api] being
+# the obvious one. The cost is a slower bootstrap, once.
+log "Installing Python dependencies (all runtime extras)"
+python -m pip install --quiet -e \
+    ".[dev,generators,storage,ingestion,cdc,spark,lake,api,observability,stream]"
 
 # Persist JAVA_HOME into the venv so every activation gets a Spark-compatible JDK
 # without touching the user's global environment.
@@ -103,10 +117,55 @@ print("generated a random AUTH_JWT_SECRET")
 PY
 fi
 
+# --------------------------------------------------------------------- node
+# This breaks the "install it in the stage that first needs it" rule above, and the
+# reason is the failure mode rather than the size.
+#
+# A missing Postgres produces a connection error that names Postgres. A missing
+# Node produces *the Windows Node*: WSL puts `/mnt/c/Program Files/nodejs` on PATH
+# through interop, so `npm install` silently runs a Windows binary against a Linux
+# checkout and fails somewhere a long way from the cause. ~50 MB to make that
+# impossible is a good trade.
+#
+# Set SKIP_NODE=1 to leave it out on a machine that will never build the frontend.
+NODE_MAJOR=22
+
+node_is_linux() {
+    command -v node >/dev/null || return 1
+    case "$(command -v node)" in
+        /mnt/c/*) return 1 ;;   # the Windows install, reached through interop
+        *) return 0 ;;
+    esac
+}
+
+if [[ "${SKIP_NODE:-0}" == "1" ]]; then
+    warn 'SKIP_NODE=1: not installing Node. frontend/ will not build.'
+elif node_is_linux && [[ "$(node -v | sed 's/^v\([0-9]*\).*/\1/')" -ge 20 ]]; then
+    log "Node already present: $(node -v) at $(command -v node)"
+else
+    if command -v node >/dev/null && ! node_is_linux; then
+        warn "The node on PATH is the Windows install at $(command -v node)."
+        warn "Installing a Linux one; /usr/bin will take precedence."
+    fi
+    # NodeSource rather than apt's own: Ubuntu ships a Node too old for Vite 6,
+    # and the resulting error is a syntax error inside a dependency rather than a
+    # version message.
+    log "Installing Node ${NODE_MAJOR} from NodeSource"
+    curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | sudo -E bash - >/dev/null
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs
+fi
+
+# Dependencies are deliberately *not* installed here. `npm ci` in frontend/ pulls
+# ~150 packages and tens of thousands of files, which is the one part of this
+# project genuinely worth deferring until someone builds the dashboard.
+
 # ------------------------------------------------------------------ verify
 log "Verifying the toolchain"
 export JAVA_HOME="${JAVA_HOME_PATH}"
 java -version 2>&1 | head -1
+if node_is_linux; then
+    echo "node $(node -v) ($(command -v node)), npm $(npm -v)"
+fi
 python -c "import pyspark, delta; print(f'pyspark {pyspark.__version__}')"
 python -c "from confidentia.config.settings import get_settings; s=get_settings(); print(f'settings ok: data_root={s.data_root} tee={s.tee.backend.value} ({s.tee.measurement_label})')"
 
@@ -114,4 +173,12 @@ log "Bootstrap complete."
 echo
 echo "  source ${PROJECT_DIR}/.venv/bin/activate"
 echo "  python spikes/pme/build_kms_jar.py && python spikes/pme/run_spike.py"
+echo
+echo "  services this script does not install, in the order the stages need them:"
+echo "    scripts/install_postgres.sh      metadata store + CDC source"
+echo "    scripts/install_kafka.sh         streaming (stage 9)"
+echo "    scripts/install_airflow.sh       orchestration (stage 8)"
+echo
+echo "  the dashboard needs its dependencies fetched once:"
+echo "    (cd frontend && npm install) && bash scripts/serve_dashboard.sh"
 echo
