@@ -227,7 +227,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-      - run: pip install -e ".[spark,lake,dev]"
+      # The spike probes need only [spark,lake,dev], but the `pytest -m spark` step
+      # below collects every test module before filtering by marker — the same
+      # reason the unit-tests job installs the full set — so a missing extra fails
+      # collection rather than the test.
+      - run: pip install -e ".[dev,generators,storage,ingestion,spark,lake,api]"
       - name: Build the KMS client jar
         run: python spikes/pme/build_kms_jar.py
       - name: Write encrypted tables and verify the bytes
