@@ -59,8 +59,9 @@ def run(rows: int = 60_000, settings: Settings | None = None) -> list[dict[str, 
     settings = settings or get_settings()
     from pyspark.sql import functions as F
 
+    from confidentia.crypto.broker import request_keys
     from confidentia.pipelines.bronze.writer import _apply_contract
-    from confidentia.spark.session import build_session
+    from confidentia.spark.session import apply_encryption, build_session
 
     contract = get_contract(TENANT, DATASET)
     landing = settings.lake_root / "landing" / TENANT / DATASET
@@ -68,6 +69,11 @@ def run(rows: int = 60_000, settings: Settings | None = None) -> list[dict[str, 
     shutil.rmtree(work, ignore_errors=True)
 
     spark = build_session("bench-e8", settings=settings)
+    # The landing zone is encrypted since ADR 0022, so even a benchmark that only
+    # reads it needs key material. This is the cost the fix imposes on everything
+    # downstream, and it is the intended one: there is no longer a way to read raw
+    # source records without presenting an attestation.
+    apply_encryption(spark, request_keys(TENANT))
     findings: list[dict[str, Any]] = []
 
     try:

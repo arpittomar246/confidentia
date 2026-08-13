@@ -28,6 +28,7 @@ import pandas as pd
 from confidentia.common.hashing import sha256_file
 from confidentia.common.logging import get_logger
 from confidentia.config.settings import get_settings
+from confidentia.crypto.landing import LandingCrypto
 from confidentia.ingestion.base import (
     IngestResult,
     TerminalError,
@@ -173,6 +174,11 @@ class FileCollector:
             files = self._verify(directory, manifest, run.run_id, tenant, dataset)
             self.registry.record_files(batch_digest, files)
 
+            # One key release per run, audited against this run id. The landing
+            # zone is encrypted under the same keys as Bronze (ADR 0022), so a
+            # measurement that cannot obtain them cannot land data either.
+            crypto = LandingCrypto.for_tenant(tenant, run_id=run.run_id)
+
             written = 0
             bytes_read = 0
             for part, entry in enumerate(files):
@@ -193,6 +199,7 @@ class FileCollector:
                     dataset=dataset,
                     batch_digest=batch_digest,
                     part=part,
+                    crypto=crypto,
                 )
                 written += len(enveloped)
                 bytes_read += entry["bytes"]

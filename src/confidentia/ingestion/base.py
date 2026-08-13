@@ -15,6 +15,15 @@ Every record gains an envelope at ingestion — run id, batch digest, source fil
 ordinal. That envelope is the seed of the verifiable lineage chain (C3): without a
 record-level link back to the batch that produced it, provenance can only be
 asserted at table granularity.
+
+**The landing zone is encrypted.** It was not, for eleven stages: the enclave
+placement planner (C5) found raw identifiers sitting in plaintext Parquet here,
+outside the confidentiality boundary that Bronze onward maintains. ADR 0022 records
+the fix — landing parts are written with Parquet Modular Encryption under the same
+attestation-released, per-sensitivity keys Bronze uses, so the two hops are now
+protected identically and replay survives. ``write_landing`` therefore *requires*
+key material; there is no plaintext fallback, because a fallback is how the hole
+existed in the first place.
 """
 
 from __future__ import annotations
@@ -26,12 +35,16 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import pandas as pd
 
 from confidentia.common.logging import get_logger
 from confidentia.store.repositories import BatchDecision
+
+if TYPE_CHECKING:  # pragma: no cover
+    from confidentia.catalog.contracts import SchemaContract
+    from confidentia.crypto.landing import LandingCrypto
 
 logger = get_logger(__name__)
 
@@ -202,20 +215,75 @@ def write_landing(
     dataset: str,
     batch_digest: str,
     part: int,
+    crypto: LandingCrypto,
+    contract: SchemaContract | None = None,
 ) -> Path:
-    """Write one part into the landing zone.
+    """Write one encrypted part into the landing zone.
 
     Named by batch digest, so re-ingesting identical content overwrites in place
     rather than accumulating duplicate parts. Combined with the batch registry this
     makes ingestion idempotent at the filesystem level too, not only in metadata —
     an interrupted run that already wrote three of five parts leaves no orphans.
+
+    ``crypto`` is required. Its key material was released against an attestation
+    for this run, and which columns it protects comes from the dataset's schema
+    contract, so landing and Bronze protect the same columns under the same keys.
+
+    The write is verified from the bytes before it is allowed to stand, and a part
+    that fails verification is deleted rather than left for someone to find later —
+    the one thing worse than an unencrypted landing zone is an unencrypted landing
+    zone that reports itself as encrypted.
     """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from confidentia.catalog.contracts import ContractError, get_contract
+    from confidentia.crypto.landing import LandingEncryptionError, assert_encrypted
+
+    if contract is None:
+        try:
+            contract = get_contract(tenant, dataset)
+        except (ContractError, KeyError) as exc:
+            # Ingestion used to land any directory it was pointed at. That is how
+            # healthcare/patient_change — a source-side mutation script, not a lake
+            # dataset — spent months in the landing zone unclassified and in
+            # plaintext: Bronze refused it for want of a contract, and nothing
+            # upstream refused it at all. Now the refusal happens before the write.
+            raise ContractError(
+                f"{tenant}/{dataset} has no schema contract, so there is no "
+                "sensitivity classification to encrypt it by and Bronze could never "
+                "promote it. Declare the contract in catalog/contracts.py, or stop "
+                "pointing a collector at this dataset."
+            ) from exc
     target = landing_path(lake_root, tenant, dataset)
     target.mkdir(parents=True, exist_ok=True)
     path = target / f"batch={batch_digest[:16]}" / f"part-{part:05d}.parquet"
     path.parent.mkdir(parents=True, exist_ok=True)
-    frame.to_parquet(path, index=False, compression="snappy")
+
+    table = pa.Table.from_pandas(frame, preserve_index=False)
+    properties = crypto.encryption_properties(contract, present=set(table.schema.names))
+    try:
+        with pq.ParquetWriter(
+            path, table.schema, compression="snappy", encryption_properties=properties
+        ) as writer:
+            writer.write_table(table)
+        assert_encrypted(path)
+    except LandingEncryptionError:
+        path.unlink(missing_ok=True)
+        raise
     return path
+
+
+def read_landing_part(path: Path, crypto: LandingCrypto) -> pd.DataFrame:
+    """Read one encrypted landing part back.
+
+    Used by verification and migration, and by anything that wants to inspect what
+    arrived without standing up Spark. Bronze does not go through here — it reads
+    the same files through Spark, which is the interop this design turns on.
+    """
+    import pyarrow.parquet as pq
+
+    return pq.read_table(path, decryption_properties=crypto.decryption_properties()).to_pandas()
 
 
 def iter_frame_chunks(frame: pd.DataFrame, chunk_rows: int) -> Iterator[pd.DataFrame]:

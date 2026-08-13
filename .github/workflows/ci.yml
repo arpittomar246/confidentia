@@ -99,7 +99,11 @@ jobs:
         run: PGPASSWORD=confidentia psql -h localhost -U confidentia -d confidentia -c "CREATE DATABASE ehr_oltp"
       - name: apply migrations
         run: python -m confidentia.cli db migrate
-      - run: pytest -m integration
+      # Spark-marked integration tests are excluded here and run in
+      # encryption-guarantee instead, which provisions a JVM. This job does not,
+      # and a test that needs one would fail for a reason unrelated to what it
+      # checks.
+      - run: pytest -m "integration and not spark"
 
   # The ground-truth answer key records every injected defect and every latent
   # fraud label. A pipeline that read it would score perfectly and mean nothing,
@@ -244,6 +248,17 @@ jobs:
         env:
           SPIKE_WORK_DIR: ${{ runner.temp }}/spike
         run: python spikes/pme/inspect_files.py "${{ runner.temp }}/spike"
+      # The landing zone is written by pyarrow and read by Spark's Java crypto
+      # factory (ADR 0022). They agree only because two wrapping routines in
+      # different languages produce identical bytes, and nothing but this test
+      # enforces that. A drift would make every landing part written afterwards
+      # unreadable by Bronze, surfacing at the next promotion rather than at the
+      # change that caused it.
+      - name: Spark reads what pandas wrote
+        env:
+          CONFIDENTIA_DATA_ROOT: ${{ runner.temp }}/landing-interop
+          CONFIDENTIA_KEYSTORE_PASSPHRASE: ci-only-throwaway-passphrase
+        run: pytest -m spark
 
   # Determinism is load-bearing: experiment E3 compares incremental against full
   # reprocessing of the same data, and E8 replays a dataset under a drifted

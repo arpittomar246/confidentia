@@ -131,12 +131,31 @@ def test_tokenisation_reduces_the_visible_protected_set() -> None:
     assert bronze_total > silver_total > 0
 
 
-def test_the_landing_zone_is_reported_as_a_boundary_violation() -> None:
-    """Landing is written as PAR1 before Bronze encrypts anything."""
-    violations = placement_module.boundary_violations()
+def test_a_plaintext_landing_file_is_reported_as_a_boundary_violation(tmp_path) -> None:
+    """A PAR1 footer under lake/landing is a violation, and is named as one.
+
+    This test used to assert that the violation was *always* reported, because it
+    always was — the detector returned a hard-coded finding. That was honest while
+    the landing zone was plaintext and became a lie the moment ADR 0022 fixed it,
+    which is the argument for deriving the answer from the disk instead.
+    """
+    import pandas as pd
+
+    part = tmp_path / "landing" / "healthcare" / "patient" / "batch=deadbeef"
+    part.mkdir(parents=True)
+    pd.DataFrame({"ssn": ["123-45-6789"]}).to_parquet(part / "part-00000.parquet", index=False)
+
+    violations = placement_module.boundary_violations(lake_root=tmp_path)
     assert [v.location for v in violations] == ["lake/landing"]
     assert violations[0].protected_columns > 0
+    assert "part-00000.parquet" in violations[0].detail
     assert violations[0].remedy
+
+
+def test_an_encrypted_landing_zone_reports_nothing(tmp_path) -> None:
+    """The detector goes quiet when the lake is clean, and only then."""
+    (tmp_path / "landing" / "healthcare" / "patient").mkdir(parents=True)
+    assert placement_module.boundary_violations(lake_root=tmp_path) == []
 
 
 # ------------------------------------------------------------------- the model

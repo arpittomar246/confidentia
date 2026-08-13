@@ -30,6 +30,7 @@ import pandas as pd
 from confidentia.common.hashing import sha256_json
 from confidentia.common.logging import get_logger
 from confidentia.config.settings import get_settings
+from confidentia.crypto.landing import LandingCrypto
 from confidentia.ingestion.base import (
     IngestResult,
     RetryableError,
@@ -228,6 +229,7 @@ class RestCollector:
                 dataset=dataset,
                 batch_digest=batch_digest,
                 part=0,
+                crypto=LandingCrypto.for_tenant(tenant, run_id=run.run_id),
             )
             run.add(read=len(frame), written=len(enveloped))
             self.registry.mark(batch_digest, "ingested", run.run_id)

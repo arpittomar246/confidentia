@@ -64,7 +64,8 @@ def run(
 
     from pyspark.sql import functions as F
 
-    from confidentia.spark.session import build_session
+    from confidentia.crypto.broker import request_keys
+    from confidentia.spark.session import apply_encryption, build_session
     from confidentia.streaming.consumer import payload_schema
 
     work = settings.data_root / "bench" / "e1"
@@ -79,6 +80,9 @@ def run(
     # with_kafka pulls the Structured Streaming connector, which is a Maven package
     # rather than part of pyspark.
     spark = build_session("bench-e1", settings=settings, with_kafka=True)
+    # The batch arm reads the encrypted landing zone (ADR 0022), so this session
+    # needs key material even though it writes nothing encrypted itself.
+    apply_encryption(spark, request_keys(TENANT))
 
     try:
 

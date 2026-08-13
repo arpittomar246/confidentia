@@ -74,9 +74,21 @@ The planner reports it as a violation with two remedies:
 2. Delete each batch as soon as Bronze has durably committed it. Cheaper, and loses
    the ability to replay a batch without re-fetching it from the source.
 
-**Neither is implemented.** This ADR records the finding and the options; choosing
-between them changes ingestion's recovery story and is not a decision to make as a
-side effect of writing a planner.
+**Neither was implemented when this ADR was written.** Recording the finding and the
+options was the right stopping point: choosing between them changes ingestion's
+recovery story, and that is not a decision to make as a side effect of writing a
+planner.
+
+> **Resolved by [ADR 0022](0022-landing-zone-encryption.md).** Remedy 1 was taken —
+> the landing zone is encrypted under the same attestation-released, per-sensitivity
+> keys as Bronze, at a measured ×1.014 storage cost, and replay survives. Remedy 2
+> was rejected because deleting the evidence to avoid protecting it solves the wrong
+> problem.
+>
+> The detector changed with it. `boundary_violations()` returned this finding as a
+> hard-coded conclusion, which was honest while the hole was open and would have
+> become a lie the moment it closed. It now scans the landing zone for the `PAR1`
+> footer magic, so the report is re-derived from the bytes on every run.
 
 ## Partition sizing
 

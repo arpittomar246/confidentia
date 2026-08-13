@@ -333,6 +333,135 @@ def ingest_oltp(
         typer.echo(f"{oltp_loader.patient_count():,} patients in the OLTP source")
 
 
+landing_app = typer.Typer(help="The landing zone (ADR 0022).", no_args_is_help=True)
+app.add_typer(landing_app, name="landing")
+
+
+@landing_app.command("verify")
+def landing_verify() -> None:
+    """Prove, from the bytes, that no landing file is plaintext.
+
+    **Exits non-zero when one is.** The landing zone was plaintext until ADR 0022,
+    and the way that went unnoticed for eleven stages was that nothing looked. This
+    command looks — at the four-byte Parquet footer magic of every file under
+    ``lake/landing``, not at configuration that claims encryption is on.
+
+    It is wired into ``scripts/verify_encryption.sh`` and CI for the same reason
+    Bronze's write verification is: an encryption guarantee that is not re-checked
+    is a guarantee about the past.
+    """
+    from confidentia.crypto.landing import PARQUET_ENCRYPTED_MAGIC, footer_magic, plaintext_parts
+
+    root = get_settings().lake_root / "landing"
+    if not root.exists():
+        typer.echo(f"no landing zone at {root}; nothing to verify")
+        return
+
+    everything = [p for p in root.rglob("*.parquet") if p.is_file()]
+    offenders = plaintext_parts(root)
+
+    if not everything:
+        typer.echo(f"landing zone at {root} holds no parquet files")
+        return
+
+    encrypted = len(everything) - len(offenders)
+    typer.echo(f"{encrypted}/{len(everything)} landing files carry the PARE footer magic")
+
+    if offenders:
+        typer.echo("")
+        typer.echo("PLAINTEXT landing files — protected columns are readable on disk:")
+        for path in offenders[:20]:
+            typer.echo(f"  {footer_magic(path)!r}  {path.relative_to(root)}")
+        if len(offenders) > 20:
+            typer.echo(f"  ... and {len(offenders) - 20} more")
+        typer.echo("")
+        typer.echo("Fix them without re-ingesting:")
+        typer.echo("")
+        typer.echo("    python -m confidentia.cli landing encrypt --apply")
+        raise typer.Exit(code=1)
+
+    typer.echo(f"expected magic {PARQUET_ENCRYPTED_MAGIC!r} on every file; landing is clean")
+
+
+def _report_orphans(orphans: list) -> None:
+    """Name landing datasets no schema contract classifies.
+
+    Worth its own paragraph in the output rather than a line in the table: a
+    dataset the catalog has never heard of cannot be promoted, cannot be quality
+    checked, and — until this migration ran — was not encrypted either. Every
+    column of it is now under the tenant's PHI key, which protects it and is not
+    the same as classifying it.
+    """
+    if not orphans:
+        return
+    datasets = sorted({f"{r.tenant}/{r.dataset}" for r in orphans})
+    typer.echo("")
+    typer.echo("Landed without a schema contract, so every column was encrypted:")
+    for name in datasets:
+        typer.echo(f"  {name}")
+    typer.echo("")
+    typer.echo("These cannot reach Bronze. Either add a contract or remove them;")
+    typer.echo("ingestion now refuses to land a dataset the catalog does not declare.")
+
+
+@landing_app.command("encrypt")
+def landing_encrypt(
+    tenant: Annotated[str | None, typer.Option(help="Restrict to one tenant.")] = None,
+    dataset: Annotated[str | None, typer.Option(help="Restrict to one dataset.")] = None,
+    apply: Annotated[bool, typer.Option("--apply", help="Actually rewrite the files.")] = False,
+) -> None:
+    """Re-encrypt landing parts written before ADR 0022.
+
+    Defaults to a dry run. It rewrites data in place, and a command that does that
+    on the strength of a typo is a command that will eventually be regretted — so
+    the destructive form has to be asked for.
+
+    Each part is rewritten under the same attestation-released, per-sensitivity keys
+    Bronze uses, verified from its footer magic, and only then moved over the
+    original. The batch registry is untouched: this preserves the record of what
+    arrived when, which re-ingesting would not.
+    """
+    from confidentia.crypto.landing import reencrypt_landing
+
+    results = reencrypt_landing(
+        get_settings().lake_root, tenant=tenant, dataset=dataset, dry_run=not apply
+    )
+    if not results:
+        typer.echo("no plaintext landing parts found; nothing to do")
+        return
+
+    rows = sum(r.rows for r in results)
+    orphans = [r for r in results if r.unclassified]
+
+    if not apply:
+        typer.echo(f"{len(results)} plaintext part(s), {rows:,} rows, would be re-encrypted:")
+        for result in results[:20]:
+            mark = "  [no contract]" if result.unclassified else ""
+            typer.echo(
+                f"  {result.tenant}/{result.dataset}  {result.path.name}  "
+                f"{result.rows:,} rows  {result.plaintext_bytes / 1024:,.0f} KiB{mark}"
+            )
+        if len(results) > 20:
+            typer.echo(f"  ... and {len(results) - 20} more")
+        typer.echo("")
+        typer.echo("Re-run with --apply to rewrite them.")
+        _report_orphans(orphans)
+        return
+
+    before = sum(r.plaintext_bytes for r in results)
+    after = sum(r.encrypted_bytes for r in results)
+    typer.echo(f"re-encrypted {len(results)} part(s), {rows:,} rows")
+    typer.echo(
+        f"{before / 1024 / 1024:.2f} MiB plaintext -> {after / 1024 / 1024:.2f} MiB "
+        f"encrypted (x{after / before:.3f})"
+    )
+    _report_orphans(orphans)
+    typer.echo("")
+    typer.echo("The old plaintext blocks are unlinked, not shredded. Wiping them is a")
+    typer.echo("disk-level operation; on a lake holding real data, use full-disk")
+    typer.echo("encryption rather than trusting an unlink.")
+
+
 keys_app = typer.Typer(help="Key hierarchy and attestation policy.", no_args_is_help=True)
 bronze_app = typer.Typer(help="Bronze layer.", no_args_is_help=True)
 app.add_typer(keys_app, name="keys")
@@ -1416,6 +1545,11 @@ def plan_placement() -> None:
             typer.echo(f"  {violation.location}: {violation.detail}")
             typer.echo(f"    {violation.protected_columns} protected columns affected")
             typer.echo(f"    remedy: {violation.remedy}")
+    else:
+        # Said out loud rather than left as an absence. This check found the
+        # landing-zone hole (ADR 0022); silence now means it looked and found
+        # nothing, which is a different statement from not having looked.
+        typer.echo("\nboundary violations: none — every landing file scanned carries PARE")
 
 
 @plan_app.command("show")

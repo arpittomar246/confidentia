@@ -40,6 +40,7 @@ import psycopg2.extras
 from confidentia.common.hashing import sha256_json
 from confidentia.common.logging import get_logger
 from confidentia.config.settings import get_settings
+from confidentia.crypto.landing import LandingCrypto
 from confidentia.ingestion.base import (
     IngestResult,
     TerminalError,
@@ -324,6 +325,7 @@ class CdcCollector:
                         dataset=self.dataset,
                         batch_digest=batch_digest,
                         part=0,
+                        crypto=LandingCrypto.for_tenant(self.tenant, run_id=run.run_id),
                     )
                     run.add(written=len(enveloped))
                     self.registry.mark(batch_digest, "ingested", run.run_id)

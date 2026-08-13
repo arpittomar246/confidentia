@@ -30,10 +30,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from confidentia.catalog.contracts import SchemaContract, all_contracts
-from confidentia.config.settings import Layer, Sensitivity
+from confidentia.config.settings import Layer, Sensitivity, get_settings
 
 # The classifications that oblige a stage to be inside the boundary. PUBLIC and
 # INTERNAL do not: internal columns are encrypted at rest and in transit, but
@@ -279,19 +280,28 @@ class BoundaryViolation:
         }
 
 
-def boundary_violations(contracts: list[SchemaContract] | None = None) -> list[BoundaryViolation]:
-    """Places where the current architecture stores protected plaintext at rest.
+def boundary_violations(
+    contracts: list[SchemaContract] | None = None, *, lake_root: Path | None = None
+) -> list[BoundaryViolation]:
+    """Places where the platform stores protected plaintext at rest.
 
     A placement planner that only costs the stages inside the boundary would miss
     the more important question, which is whether the boundary encloses everything
-    it should. It does not: the landing zone is written before Bronze encrypts
-    anything, so raw source records sit on disk in cleartext Parquet.
+    it should. The first time this ran, it did not: the landing zone was written
+    before Bronze encrypted anything, so raw source records sat on disk in
+    cleartext Parquet — 19 SSN-shaped strings in one ``patient`` part. ADR 0022
+    closed that.
 
-    This is derived from the contracts, not asserted — but it has also been
-    confirmed by inspection: landing files carry the ``PAR1`` footer magic while
-    Bronze files carry ``PARE``, and grepping a landing patient file's raw bytes
-    turns up SSN- and email-shaped strings. See the stage report.
+    **This now reads the disk rather than asserting a conclusion.** The original
+    version returned a hard-coded finding, which was honest while the hole was open
+    and would have been a lie the moment it was fixed — and, worse, would have gone
+    on being printed by a planner nobody re-checked. Scanning for the ``PAR1``
+    footer magic means the report is re-derived from the bytes on every run, so it
+    goes quiet when the lake is clean and speaks up again if a future collector
+    reintroduces a plaintext write.
     """
+    from confidentia.crypto.landing import plaintext_parts
+
     contracts = contracts if contracts is not None else all_contracts()
     protected = sum(
         1
@@ -299,20 +309,27 @@ def boundary_violations(contracts: list[SchemaContract] | None = None) -> list[B
         for column in contract.columns
         if column.sensitivity in PROTECTED
     )
+    root = lake_root if lake_root is not None else get_settings().lake_root
+    offenders = plaintext_parts(root / "landing")
+    if not offenders:
+        return []
+
+    sample = ", ".join(p.name for p in offenders[:3])
     return [
         BoundaryViolation(
             location="lake/landing",
             detail=(
-                "Written as unencrypted Parquet (PAR1) before Bronze applies "
-                "Parquet Modular Encryption. Raw source records, including direct "
-                "identifiers, are readable by anyone with filesystem access."
+                f"{len(offenders)} landing file(s) carry the plaintext Parquet "
+                f"footer magic (PAR1) instead of PARE — for example {sample}. Raw "
+                "source records, including direct identifiers, are readable by "
+                "anyone with filesystem access."
             ),
             protected_columns=protected,
             remedy=(
-                "Either bring the landing zone inside the boundary and encrypt it "
-                "with the same per-sensitivity keys, or delete each batch as soon "
-                "as Bronze has durably committed it. The second is cheaper and "
-                "loses the ability to replay a batch without re-fetching it."
+                "Re-encrypt them in place with `confidentia landing encrypt`, which "
+                "rewrites each part under the same attestation-released keys Bronze "
+                "uses, or re-ingest the affected batches. Files written before "
+                "ADR 0022 are the expected cause."
             ),
         )
     ]
