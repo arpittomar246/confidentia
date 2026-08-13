@@ -44,6 +44,15 @@ step "DAG/CLI contract"       python scripts/check_dag_cli_contract.py
 step "key material handling"  python scripts/check_key_material_handling.py
 step "declared dependencies"  python scripts/check_declared_dependencies.py
 step "openapi schema"         python scripts/export_openapi.py --check
+# CI checks `terraform fmt`, and the first Stage 15 push failed on a tfvars
+# file written after the last local format run. A local suite that does not
+# run what CI runs is how six stages passed here and failed on GitHub.
+if command -v terraform >/dev/null; then
+    step "terraform fmt"          terraform -chdir=infrastructure/terraform fmt -check -recursive
+    step "terraform validate"     bash -c "cd infrastructure/terraform && terraform init -backend=false -input=false >/dev/null && terraform validate"
+else
+    echo "  (terraform not installed; CI still checks fmt and validate)"
+fi
 
 echo
 echo "======== generator determinism (CI job) ========"

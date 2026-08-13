@@ -34,6 +34,6 @@ postgres_version = "16"
 allowed_ingress_cidrs = []
 
 tags = {
-  owner      = "M25DE2005"
+  owner       = "M25DE2005"
   cost_centre = "iitj-mtp"
 }
