@@ -1,9 +1,9 @@
 # PROJECT_CONTEXT
 
 Handoff document for **CONFIDENTIA**. Written so development can continue without
-re-deriving anything. Current as of **Stage 16 — all sixteen stages complete** (14 CI jobs green plus
+re-deriving anything. Current as of **Stage 16 + ADR 0022 — all sixteen stages complete, landing zone encrypted** (14 CI jobs green plus
 security and release workflows,
-286 unit + 74 integration tests,
+304 unit + 77 integration tests,
 **all five contributions delivered**, API and dashboard live, containers building,
 Prometheus and Grafana wired to the pipeline's own tables).
 
@@ -32,7 +32,7 @@ confidentiality boundary, and where in that pipeline should the boundary be draw
 | **C2** | Attestation-gated key release | **Done** (Stage 4) |
 | **C3** | Cryptographically verifiable lineage (signed, Merkle-chained provenance) | **Done** (Stage 9b) — per-record Merkle roots, ECDSA-signed, hash-chained in Postgres |
 | **C4** | Disclosure control on Gold aggregates and DQ metrics | **Done** (Stage 6) |
-| **C5** | Enclave placement planner / EPC-aware partition sizing | **Done** (C5) — derived placement, measured widths, modelled cost; found plaintext in the landing zone |
+| **C5** | Enclave placement planner / EPC-aware partition sizing | **Done** (C5) — derived placement, measured widths, modelled cost; found plaintext in the landing zone, now closed by ADR 0022 |
 
 ### Honesty policy (non-negotiable)
 
@@ -135,7 +135,7 @@ SOURCES                    INGESTION                LANDING          BRONZE
 
 | Layer | Location | Partition | Meaning |
 |---|---|---|---|
-| landing | `lake/landing/<tenant>/<dataset>/batch=<digest16>/` | none | Exactly what arrived, checksum-verified |
+| landing | `lake/landing/<tenant>/<dataset>/batch=<digest16>/` | none | Exactly what arrived, checksum-verified, encrypted per column (ADR 0022) |
 | bronze | `lake/bronze/<tenant>/<dataset>/` | `ingest_date` | Typed, encrypted, still raw values |
 | silver | `lake/silver/<tenant>/<dataset>/` | `event_date` | Conformed, deduped, tokenised, SCD2 |
 | gold | `lake/gold/<tenant>/<table>/` | `event_date` (facts) | Star schema, encrypted |
@@ -218,7 +218,7 @@ and are not meant to.
 ├── orchestration/dags/           6 DAGs + confidentia_common.py   Stages 8-9b
 ├── tests/  (conftest + 12 unit + 1 integration + 2 api)  333 tests
 ├── scripts/  (operational scripts, see §9)
-├── docs/adr/ (17 ADRs)  docs/stage-reports/ (18 reports)
+├── docs/adr/ (18 ADRs)  docs/stage-reports/ (18 reports)
 ├── frontend/                     Vite + React + TS, 9 modules (Stage 11)
 ├── docker/{backend,frontend,spark,airflow}/  four images, all built (Stage 13)
 ├── docs/api/openapi.json         Committed schema; CI fails if stale
@@ -743,7 +743,7 @@ not on this machine (see the environment note in §11).
 | `lineage_tamper.py` | **9b.** Used by the above. Edits a real Delta table with the column keys set, and restores it by time travel. Not underscore-prefixed because `verify_lineage.sh` depends on it — a gitignored dependency would break on a fresh clone |
 | `lineage_granularity_bench.py` | **9b.** Reproduces ADR 0015's per-run / per-file / per-record measurement |
 | `lineage_overhead.sql` | **9b.** Digest cost per record, from `platform.run` metadata |
-| `pick_business_key.py` | Prints one business-key value from a landing file. No keys, no Spark — so a demo value is independent of the machinery being demonstrated |
+| `pick_business_key.py` | Prints one business-key value from a landing file. Needs keys since ADR 0022; still no Spark |
 
 `rebuild_pipeline.sh` encodes three orderings that are easy to get wrong by hand:
 `keys approve` after any measured-package edit; the **REST redelivery of
@@ -1146,10 +1146,15 @@ C5 produced numbers that belong in the report and are cheap to regenerate:
 placement derivation, and the volume sweep showing where partition sizing starts to
 pay.
 
-**The landing-zone violation should be closed or explicitly accepted before the
-report claims data is protected at rest.** ADR 0017 records both remedies. It is a
-real hole: landing files are `PAR1`, and one patient file's raw bytes contain 19
-SSN-shaped strings.
+**The landing-zone violation is closed** (ADR 0022). Landing is encrypted under
+the same attestation-released keys as Bronze at a measured ×1.014 storage cost, the
+detector now reads the disk instead of returning a fixed conclusion, and
+`scripts/verify_landing.sh` re-proves it in four separate OS processes.
+
+**What is left of it:** `healthcare/patient_change` is encrypted under the PHI key
+because no schema contract classifies it. That is the safe failure, not the right
+one — the data cannot be promoted or evaluated until someone writes a contract or
+deletes it, and nothing currently forces that decision.
 
 ### Optional, and genuinely useful
 

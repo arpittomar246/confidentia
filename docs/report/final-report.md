@@ -40,8 +40,12 @@ control; what keeps Gold's computation inside the boundary is that disclosure
 control has not been applied yet at that point.
 
 Applying that rule also exposed a defect the platform had carried since Stage 3:
-the landing zone writes unencrypted Parquet, and a single landing file was found to
-contain 19 SSN-shaped strings.
+the landing zone wrote unencrypted Parquet, and a single landing file was found to
+contain 19 SSN-shaped strings. It has since been closed — landing is encrypted
+under the same attestation-released keys as Bronze, at a measured ×1.014 storage
+cost — and the closing turned up a second, quieter problem: a dataset that had sat
+in the landing zone for four days with no schema contract, and so had never been
+promoted, classified or protected, because nothing knew it was there.
 
 **There is no confidential-computing hardware behind this work.** The TEE layer is
 an abstraction with a simulated backend. Every number derived from it is labelled
@@ -102,8 +106,8 @@ scores the platform against ground truth, and the placement planner.
 ```
 SOURCES                 INGESTION            LANDING          BRONZE
  generated files  ──▶  FileCollector   ──▶  lake/landing/ ──▶ encrypted Delta
- mock REST API    ──▶  RestCollector        (PLAINTEXT —      (Parquet Modular
- Postgres WAL     ──▶  CdcCollector          see §7.1)          Encryption)
+ mock REST API    ──▶  RestCollector        (encrypted —      (Parquet Modular
+ Postgres WAL     ──▶  CdcCollector          see §5.5.1)        Encryption)
  Kafka topic      ──▶  Structured Streaming ──────────────────────▲
                         (no landing; writes the SAME table)       │
                               │                                   ▼
@@ -128,7 +132,7 @@ SOURCES                 INGESTION            LANDING          BRONZE
 
 | Layer | Partition | Meaning |
 |---|---|---|
-| landing | none | Exactly what arrived, checksum-verified. **Unencrypted.** |
+| landing | none | Exactly what arrived, checksum-verified, encrypted (§5.5.1) |
 | bronze | `ingest_date` | Typed, encrypted, still raw values |
 | silver | `event_date` | Conformed, deduplicated, tokenised, SCD2 |
 | gold | `event_date` | Star schema, encrypted |
@@ -141,11 +145,11 @@ we receive on Tuesday"; Silver answers "what happened on Tuesday".
 
 | | |
 |---|---|
-| Python | 19,752 lines across `src/` |
-| Tests | 360 (286 unit, 74 integration) |
+| Python | 20,514 lines across `src/` |
+| Tests | 381 (304 unit, 77 integration) |
 | CI | 14 jobs, plus security and release workflows |
 | Migrations | 11 forward-only SQL migrations |
-| Design records | 17 ADRs, 19 stage reports |
+| Design records | 18 ADRs, 19 stage reports |
 | Data processed | 422,297 Bronze rows across 11 datasets, two tenants |
 
 ---
@@ -335,6 +339,80 @@ saves ~260 s at 100×, and immediately at a 32 MB EPC.
 Reported as a threshold, not a recommendation to repartition — the honest statement
 is "you do not need this yet, and here is when you will".
 
+#### 5.5.1 The boundary violation the planner found, and closing it
+
+Asking a tool where the boundary *should* fall invites the question of whether the
+boundary actually *encloses* what it claims to. It did not. The planner reported one
+violation: **the landing zone sat outside the boundary and held plaintext.** Landing
+files carried the `PAR1` footer magic while Bronze carried `PARE`, and grepping one
+landing `patient` file's raw bytes turned up 19 SSN-shaped and 7 email-shaped
+strings. Every stage downstream encrypted per column under attestation-released
+keys; the first thing written to disk was not encrypted at all.
+
+ADR 0017 recorded two remedies and chose neither, because the choice changes
+ingestion's recovery story. **ADR 0022 took the first**: landing is now written with
+Parquet Modular Encryption under the same per-sensitivity keys, released by the same
+broker, mapped to columns by the same schema contract. The alternative — deleting
+each batch once Bronze commits — was rejected because it destroys the property the
+landing zone exists for, and deleting evidence to avoid protecting it solves the
+wrong problem.
+
+**The obstacle was that the two halves speak different languages.** Bronze is
+written by Spark through a Java crypto factory; ingestion is pandas, and standing up
+a Spark session to encrypt a single 60,000-row landing part would cost more than the
+ingest it protects. So landing is encrypted by pyarrow, and the engines agree
+because `crypto/landing.py` implements the same wrapping envelope as
+`LocalKmsClient.java` — AES-256-GCM, `base64(nonce ‖ ciphertext ‖ tag)`, key
+identifier as additional authenticated data — over the published `PKMT1` key
+material format. Spark therefore reads what pandas wrote, and Bronze promotes
+through an unchanged `spark.read.parquet` call. That was proved by a spike before
+any of it was built, and is now enforced by a CI test, because a drift in either
+wrapping routine would be invisible until a promotion failed weeks later.
+
+**Measured cost of the fix:** migrating 24 parts and 369,097 rows took storage from
+21.13 MiB to 21.42 MiB, **×1.014**. The larger cost is not storage. Three call sites
+— experiments E1 and E8, and a demo helper — could previously read raw source
+records with no key, no attestation and no audit entry. All three now request keys.
+That convenience *was* the vulnerability.
+
+**Two further defects surfaced while closing it.**
+
+First, an *undeclared* column would have landed in the clear. Bronze casts to the
+contract before writing, so a column the contract does not declare never reaches its
+writer; landing is deliberately pre-contract and does receive them — E8 showed
+additive drift arriving unannounced. Under a plaintext-by-default rule a new
+`ssn_alt` column would land readable and nothing would say so, so an undeclared
+column now takes the strictest key the contract uses. This fired on the first real
+run, on a `batch` column the collectors add and no contract declares.
+
+Second, and worse: the migration found **`healthcare/patient_change`** — 900 rows of
+patient address changes, landed once by the file collector, belonging to *no schema
+contract at all*. It had never been promoted, because Bronze refuses a dataset it
+cannot type. Never quality checked or classified, for the same reason. And never
+encrypted — not because anything decided it should not be, but because nothing knew
+it was there. It is a source-side mutation script the CDC path replays into
+Postgres, never intended to be a lake dataset, and a collector pointed at a
+directory tree landed it anyway. Ingestion now refuses to land a dataset the catalog
+does not declare, and the migration encrypts unclassified data rather than skipping
+it — which protects it without pretending to classify it.
+
+**The detector changed too, and this is the part worth defending.**
+`boundary_violations()` returned a hard-coded finding. That was honest while the
+hole was open, and would have become a lie the moment it closed — worse, a lie
+printed by a tool nobody would re-check. It now scans the landing zone for the
+`PAR1` magic, so the answer is re-derived from the bytes on every run: silent when
+the lake is clean, and loud again the day a future collector reintroduces a
+plaintext write. `scripts/verify_landing.sh` runs the same check in four separate OS
+processes, because Parquet's `KeyToolkit` caches unwrapped keys statically per JVM
+and an in-process retry would read from that cache and falsely pass — which is
+exactly how the *first* Bronze verification reported a pass on unencrypted data.
+
+**What it does not fix.** The keys protecting the landing zone are released against
+a *simulated* attestation. What changed is that raw source records are no longer
+readable from disk without presenting evidence to a gate; on real hardware the same
+code path presents it to a gate that cannot be lied to. The mechanism moved to the
+right place. The root of trust did not, and stays labelled MODELLED.
+
 ---
 
 ## 6. Data quality and evaluation
@@ -480,13 +558,15 @@ Stated as findings, because most of them were found by this project's own checks
 1. **No confidential-computing hardware.** Every enclave number is MODELLED.
    Attestation is a mechanism, not a security boundary, under `sim`.
 
-2. **The landing zone stores plaintext.** Found by C5. Landing files carry the
-   `PAR1` footer magic while Bronze carries `PARE`, and one landing `patient` file
-   was found to contain **19 SSN-shaped and 7 email-shaped strings**. 42 protected
-   columns are affected. Two remedies are recorded in ADR 0017 — encrypt landing,
-   or delete each batch once Bronze has durably committed — and **neither is
-   implemented**. This should be closed before any claim that the platform protects
-   data at rest end to end.
+2. **Unclassified data can still reach the lake, and is now over-protected rather
+   than protected correctly.** `healthcare/patient_change` (§5.5.1) is encrypted
+   under the tenant's PHI key because no contract classifies it. That is the safe
+   failure, not the right one: the data cannot be promoted, queried or evaluated
+   until someone writes a contract or deletes it, and nothing currently forces that
+   decision. Ingestion refuses to *create* new instances of this; the existing one
+   is a judgement call left open deliberately rather than resolved by a script.
+   *(The landing-zone plaintext defect this entry used to describe was closed by
+   ADR 0022; see §5.5.1.)*
 
 3. **Schema drift is undetected at Bronze** (§7.4), and type drift is undetectable
    there for almost every column because the Bronze contract declares them `string`.
@@ -549,8 +629,12 @@ become a measurement with roughly a day's work against an Azure subscription.
 What the project demonstrates beyond either answer is a method: **build the check
 before the claim.** The encryption guarantee is re-proved on every push because it
 once produced a false pass. The evaluation harness scores the platform against an
-answer key it is structurally forbidden from reading. The placement planner reports
-a violation in the architecture that wrote it. Six of the eight experiments produced
+answer key it is structurally forbidden from reading. The placement planner reported
+a violation in the architecture that wrote it — and closing that violation exposed a
+second one the planner had not been looking for, a dataset nothing in the catalog
+knew existed. The detector that found the first was then rewritten to read the disk
+rather than repeat its conclusion, so it can go quiet honestly and speak up again
+without being asked. Six of the eight experiments produced
 a finding beyond their number — a benchmark that inverts below a million rows, a
 tuning knob that does nothing, an asymmetry between two ingestion paths, and silent
 data loss on drift.
@@ -562,6 +646,7 @@ data loss on drift.
 ```bash
 bash scripts/rebuild_pipeline.sh        # regenerate the lake end to end
 bash scripts/verify_encryption.sh       # C1: byte-level, keyless read refused
+bash scripts/verify_landing.sh          # C1: the landing zone, on the real lake
 confidentia keys audit                  # C2: grants and the four refusal paths
 bash scripts/verify_lineage.sh          # C3: four tamper attacks
 confidentia gold disclosure             # C4: suppression counts per mart
@@ -574,7 +659,7 @@ bash scripts/ci_local.sh                # the 14 CI jobs, locally
 
 ## Appendix B — Where the design decisions live
 
-17 ADRs in `docs/adr/`. The ones that constrain everything else:
+18 ADRs in `docs/adr/`. The ones that constrain everything else:
 
 | ADR | Decision |
 |---|---|
@@ -583,5 +668,6 @@ bash scripts/ci_local.sh                # the 14 CI jobs, locally
 | 0008 | Synthetic data and ground-truth isolation |
 | 0016 | Serving-layer boundaries: reads Postgres, never the lake |
 | 0017 | Where the confidentiality boundary is drawn |
+| 0022 | Encrypting the landing zone, and why the detector reads the disk |
 | 0020 | Supply chain: scan policy and what is accepted |
 | 0021 | Azure as the cloud target, and what stays simulated |

@@ -153,10 +153,12 @@ concession made early is worth more than a defence that collapses.
 >   move it.
 > - `gold`, `quality` and `lineage` are held by 25 named quasi-identifiers.
 >
-> And it found a hole while doing it: **the landing zone stores plaintext**. Files
-> carry `PAR1` where Bronze carries `PARE`, and one landing patient file contains 19
+> And it found a hole while doing it: **the landing zone stored plaintext**. Files
+> carried `PAR1` where Bronze carried `PARE`, and one landing patient file held 19
 > SSN-shaped strings. A planner that only costed the stages inside the boundary
-> would have missed whether the boundary encloses what it should.
+> would have missed whether the boundary encloses what it should. That is now
+> closed — ADR 0022 — and the planner's violation report reads the disk instead of
+> repeating its old conclusion.
 
 ---
 
@@ -164,21 +166,66 @@ concession made early is worth more than a defence that collapses.
 
 Rehearse these. An examiner who finds one you have not thought about will press it.
 
-### "The landing zone leaks. Isn't your whole confidentiality claim void?"
+### "You shipped a report saying the landing zone leaks. Did you just fix it to make the report look better?"
 
-> It is a real hole and I found it myself, in the last stage, with the tool I built
-> for a different purpose. I have not fixed it, and I would rather report it than
-> ship a claim it contradicts.
+> I fixed it because it was the one finding that contradicted a claim the platform
+> otherwise makes. The sequence is in the commit history: the planner reported it,
+> ADR 0017 recorded two remedies and deliberately chose neither, and ADR 0022 chose
+> the first — encrypt landing under the same attestation-released keys as Bronze,
+> rather than delete each batch once Bronze commits.
 >
-> Precisely: the boundary starts at Bronze. Everything from Bronze onward is
-> encrypted with per-tenant per-sensitivity keys and I verify that from the bytes.
-> Landing sits before it and is cleartext on disk. Two remedies are in ADR 0017 —
-> encrypt landing with the same keys, or delete each batch once Bronze has durably
-> committed. The second is cheaper and loses replay.
+> I rejected the cheaper remedy because deleting the evidence to avoid protecting it
+> solves the wrong problem, and it would take byte-verifiable replay with it.
 >
-> I did not implement either because the choice changes ingestion's recovery story,
-> and making that decision as a side effect of writing a planner would have been the
-> wrong way to make it.
+> Measured cost: ×1.014 on storage across 369,097 rows. The real cost is that three
+> call sites could previously read raw source records with no key, no attestation
+> and no audit entry, and now cannot. That convenience *was* the vulnerability.
+
+### "Landing is written by pandas and read by Spark. How does that even work?"
+
+> That was the hard part, and I proved it before building on it. pyarrow writes the
+> landing part; Spark's Java `PropertiesDrivenCryptoFactory` reads it. They
+> interoperate because both implement the Parquet key-tools `PKMT1` key material
+> format, and because I implemented the *same* wrapping envelope on both sides —
+> AES-256-GCM, `base64(nonce ‖ ciphertext ‖ tag)`, master key identifier as
+> additional authenticated data.
+>
+> The honest risk is that nothing but one test enforces that agreement. If either
+> wrapping routine drifts, every landing part written afterwards becomes unreadable
+> by Bronze, and it surfaces at the next promotion rather than at the change. So
+> that test runs in CI, in the job that provisions a JVM.
+
+### "What did fixing it break, or reveal?"
+
+> Two things, and the second is worse than the original.
+>
+> First, an undeclared column would have landed in the clear. Bronze casts to the
+> contract before writing so it never sees one; landing is deliberately
+> pre-contract and does. An undeclared column now takes the strictest key the
+> contract uses. It fired immediately on a `batch` column the collectors add.
+>
+> Second: the migration found `healthcare/patient_change` — 900 rows of patient
+> address changes with **no schema contract at all**. Never promoted, because Bronze
+> refuses what it cannot type. Never classified or quality-checked, for the same
+> reason. And never encrypted, not because anything decided it should not be, but
+> because nothing knew it was there. It is a source-side mutation script that was
+> never meant to be a lake dataset, and a collector pointed at a directory tree
+> landed it anyway.
+>
+> Ingestion now refuses to land a dataset the catalog does not declare. But the
+> general lesson is uncomfortable and I would rather say it than be asked: every
+> check I had built covered the path the data was *supposed* to take.
+
+### "Your violation detector now reports nothing. How do I know it still works?"
+
+> Because it no longer returns a conclusion — it scans the landing zone for the
+> `PAR1` footer magic on every run. The old version returned a hard-coded finding,
+> which was honest while the hole was open and would have become a lie the moment I
+> closed it.
+>
+> If you want to see it fire, drop any plaintext Parquet file under `lake/landing`
+> and re-run `confidentia plan placement`. The unit test does exactly that, and its
+> sibling asserts silence on a clean zone, so neither state passes by default.
 
 ### "Your F1 for transaction is 0.891 in one place and 0.251 in another. Which is it?"
 
@@ -269,11 +316,15 @@ Rehearse these. An examiner who finds one you have not thought about will press 
 
 ### "If you had another month?"
 
-> Three things, in order. **Close the landing-zone hole** — it is the only finding
-> that contradicts a claim the report makes. **Build incremental Silver and Gold**,
-> which unblocks E3 and is the largest missing piece of pipeline. **Deploy to Azure
-> once** — roughly a day's work, mostly the KMS client, and it would replace the
-> single largest caveat in the dissertation with a measurement.
+> Three things, in order. **Deploy to Azure once** — roughly a day's work, mostly
+> the KMS client, and it would replace the single largest caveat in the
+> dissertation with a measurement. **Build incremental Silver and Gold**, which
+> unblocks E3 and is the largest missing piece of pipeline. **Decide what
+>  is** — right now it is encrypted under the PHI key because
+> nothing classifies it, which is the safe failure rather than the right one.
+>
+> The landing-zone hole was first on this list a week ago and is now closed
+> (ADR 0022). I would rather show you that than describe it.
 
 ---
 
@@ -286,7 +337,8 @@ Rehearse these. An examiner who finds one you have not thought about will press 
 | Tamper detection | `bash scripts/verify_lineage.sh` |
 | The dashboard | `bash scripts/serve_dashboard.sh` → http://localhost:8001 |
 | Experiment results | `confidentia bench results` |
-| The landing-zone finding | ADR 0017 §"The boundary violation this exposed" |
+| The landing-zone finding, and the fix | ADR 0017 §"The boundary violation this exposed", then ADR 0022 |
+| The landing zone, re-proved live |  |
 
 **Do not open a terminal you have not run in the last hour.** Rehearse the demo
 (`docs/report/demo-script.md`) end to end at least twice.

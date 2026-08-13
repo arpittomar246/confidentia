@@ -87,12 +87,42 @@ Point at the column counts — 42 at Bronze, 25 from Silver.
 > So the thing the platform spends most of its privacy effort on isn't what shrinks
 > the boundary. Disclosure control is."
 
-Then scroll to the violation:
+Then point at the last line — `boundary violations: none`:
 
-> "And it found a hole. The landing zone writes unencrypted Parquet before Bronze
-> encrypts anything. One landing patient file contains nineteen SSN-shaped strings.
-> I found that with the tool I built for a different purpose, in the last stage, and
-> I haven't fixed it — the remedy changes ingestion's recovery story."
+> "That line used to name a hole. The landing zone wrote unencrypted Parquet before
+> Bronze encrypted anything — one landing patient file held nineteen SSN-shaped
+> strings — and I found it with the tool I'd built for a different purpose.
+>
+> It's fixed now, and I'd rather show you the fix than the report of it."
+
+```bash
+bash scripts/verify_landing.sh --no-spark
+```
+
+> "Footer magic on every file, a raw-byte grep for SSN and email patterns, and a
+> keyless read that has to be refused. Twenty-four files, zero identifier-shaped
+> strings.
+>
+> The awkward part was that Bronze is written by Spark and ingestion is pandas, so
+> the landing zone is encrypted by pyarrow and read by Spark's Java crypto factory.
+> They agree because I implemented the same key-wrapping envelope on both sides.
+> That agreement is held up by exactly one CI test — if it drifts, every landing
+> file written afterwards becomes unreadable, and you'd find out weeks later at a
+> promotion.
+>
+> Cost: one-point-four percent of storage, measured over 369,000 rows."
+
+And the part worth conceding before being asked:
+
+> "Closing it turned up something worse. The migration found a dataset in the
+> landing zone with no schema contract at all — 900 rows of patient address
+> changes, landed once by mistake. Never promoted, because Bronze refuses what it
+> can't type. Never classified. Never encrypted, not because anything decided it
+> shouldn't be, but because nothing knew it was there.
+>
+> Ingestion now refuses to land a dataset the catalog doesn't declare. But the
+> general lesson is the uncomfortable one: the checks I'd built all covered the
+> path data was supposed to take."
 
 ### 4 · Attestation refusing (90 seconds)
 
@@ -162,15 +192,17 @@ confidentia bench results
 
 ### 8 · Close (30 seconds)
 
-> "Five contributions, six of eight experiments measured, 360 tests, 14 CI jobs.
+> "Five contributions, six of eight experiments measured, 381 tests, 14 CI jobs.
 >
 > The result I didn't expect is that tokenising identifiers doesn't shrink the
 > boundary — quasi-identifiers do that work, which makes disclosure control
 > load-bearing rather than cosmetic.
 >
-> And the tool that produced that result also found a plaintext leak in my own
-> architecture. That's the part I'd want judged: every claim here has a check
-> behind it, and the checks found things."
+> And the tool that produced that result found a plaintext leak in my own
+> architecture, which I then closed — and closing it turned up a second one the
+> tool hadn't been looking for. That's the part I'd want judged: every claim here
+> has a check behind it, the checks found things, and when a check's conclusion
+> stopped being true I rewrote it to re-derive the answer instead of repeating it."
 
 ---
 

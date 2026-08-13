@@ -179,7 +179,7 @@ const td = (t, o = {}) => ({ text: t, options: { color: C.text, ...o } });
 
   const flow = [
     ["SOURCES", `files ${DOT} REST ${DOT} CDC ${DOT} Kafka`, C.dim],
-    ["LANDING", "as it arrived", C.bad],
+    ["LANDING", "as it arrived, encrypted", C.accent],
     ["BRONZE", "encrypted, raw values", C.accent],
     ["SILVER", `conform ${DOT} dedupe ${DOT} tokenise`, C.accent],
     ["GOLD", `star schema ${DOT} suppression`, C.accent],
@@ -195,16 +195,16 @@ const td = (t, o = {}) => ({ text: t, options: { color: C.text, ...o } });
     }
   });
 
-  s.addText(`Landing is written before Bronze encrypts ${DASH} see slide 11.`, {
-    x: 2.3, y: 3.06, w: 4.4, h: 0.3, fontFace: BODY, fontSize: 9.5, italic: true, color: C.bad, margin: 0,
+  s.addText(`Landing is encrypted too, since ADR 0022 ${DASH} see slide 11.`, {
+    x: 2.3, y: 3.06, w: 4.4, h: 0.3, fontFace: BODY, fontSize: 9.5, italic: true, color: C.good, margin: 0,
   });
 
   const stats = [
-    ["19,752", "lines of Python", C.text],
-    ["360", "tests", C.good],
+    ["20,514", "lines of Python", C.text],
+    ["381", "tests", C.good],
     ["14", "CI jobs", C.good],
     ["422,297", "Bronze rows", C.accent],
-    ["17 / 19", "ADRs / stage reports", C.muted],
+    ["18 / 19", "ADRs / stage reports", C.muted],
   ];
   stats.forEach(([v, l, col], i) => stat(s, 0.6 + i * 2.44, 3.85, 2.3, v, l, col));
 
@@ -457,33 +457,35 @@ const td = (t, o = {}) => ({ text: t, options: { color: C.text, ...o } });
 // ==================================================== 11. THE FINDING IT EXPOSED
 {
   const s = base(pres.addSlide());
-  title(s, "The planner found a hole in its own architecture", "Applying the rule to stages made the gap in the boundary obvious");
+  title(s, "A hole in its own architecture", "The planner reported one boundary violation, and the violation was real", { chipped: true });
+  chip(s, 11.35, 0.5, "MEASURED", "measured");
 
   const rows = [
-    [th("Location"), th("Footer magic"), th("State")],
-    [td("lake/landing/.../part-00001.parquet"), td("PAR1"), td("unencrypted", { color: C.bad, bold: true })],
-    [td("lake/bronze/.../part-00001.parquet"), td("PARE"), td("encrypted", { color: C.good })],
+    [th("lake/landing/.../part-00000.parquet"), th("footer magic"), th("state")],
+    [td("before  " + DASH + "  ADR 0017 found it"), td("PAR1"), td("unencrypted", { color: C.bad, bold: true })],
+    [td("after  " + DASH + "  ADR 0022 closed it"), td("PARE"), td("encrypted", { color: C.good, bold: true })],
   ];
   tableOn(s, rows, { x: 0.6, y: 1.9, w: 12.1, colW: [6.3, 2.6, 3.2], rowH: 0.42, fontSize: 12 });
 
   card(s, { x: 0.6, y: 3.25, w: 5.9, h: 1.55 });
   s.addText("Confirmed by inspection, not inferred", { x: 0.9, y: 3.42, w: 5.3, h: 0.3, fontFace: BODY, fontSize: 12.5, bold: true, color: C.bad, margin: 0 });
-  s.addText("One landing patient file contains 19 SSN-shaped and 7 email-shaped strings. 42 protected columns are affected.", {
+  s.addText("One landing patient file held 19 SSN-shaped and 7 email-shaped strings. 42 protected columns were affected.", {
     x: 0.9, y: 3.8, w: 5.3, h: 0.85, fontFace: BODY, fontSize: 12, color: C.text, margin: 0,
   });
 
   card(s, { x: 6.8, y: 3.25, w: 5.9, h: 1.55 });
-  s.addText("Two remedies, neither implemented", { x: 7.1, y: 3.42, w: 5.3, h: 0.3, fontFace: BODY, fontSize: 12.5, bold: true, color: C.warn, margin: 0 });
-  s.addText("Encrypt landing with the same keys, or delete each batch once Bronze has durably committed. The second is cheaper and loses replay.", {
+  s.addText("Encrypted under the same keys as Bronze", { x: 7.1, y: 3.42, w: 5.3, h: 0.3, fontFace: BODY, fontSize: 12.5, bold: true, color: C.good, margin: 0 });
+  s.addText("24 parts, 369,097 rows, " + TIMES + "1.014 storage. pyarrow writes it, Spark reads it — same wrapping envelope on both sides.", {
     x: 7.1, y: 3.8, w: 5.3, h: 0.85, fontFace: BODY, fontSize: 12, color: C.text, margin: 0,
   });
 
   card(s, { x: 0.6, y: 5.05, w: 12.1, h: 1.35 });
+  s.addText("And closing it exposed a second one, which is worse", { x: 0.95, y: 5.22, w: 11.4, h: 0.32, fontFace: HEAD, fontSize: 14, bold: true, color: C.warn, margin: 0 });
   s.addText(
-    "I found this in the last stage, with a tool built for a different purpose, and did not fix it. The choice between the two remedies changes ingestion's recovery story, and making that decision as a side effect of writing a planner would have been the wrong way to make it.",
-    { x: 0.95, y: 5.25, w: 11.4, h: 0.95, fontFace: BODY, fontSize: 12.5, color: C.text, margin: 0 }
+    "The migration found healthcare/patient_change: 900 rows, no schema contract at all. Never promoted, because Bronze refuses what it cannot type. Never classified. Never encrypted — not because anything decided it should not be, but because nothing knew it was there.",
+    { x: 0.95, y: 5.6, w: 11.4, h: 0.7, fontFace: BODY, fontSize: 12.5, color: C.text, margin: 0 }
   );
-  s.addNotes("Volunteer this. An examiner who finds it themselves will press much harder than one who is handed it.");
+  s.addNotes("Volunteer both. An examiner who finds one themselves will press much harder than one who is handed it. The line that lands: every check I had built covered the path the data was supposed to take.");
 }
 
 // ================================================== 12. EVALUATION
@@ -584,7 +586,7 @@ const td = (t, o = {}) => ({ text: t, options: { color: C.text, ...o } });
 
   const lim = [
     ["No TEE hardware", "Enclave figures are modelled. Attestation is a mechanism, not a guarantee.", C.warn],
-    ["Landing stores plaintext", "Found by C5. Not fixed: the remedy changes ingestion's recovery story.", C.bad],
+    ["Unclassified data is over-protected", "patient_change is encrypted under the PHI key because nothing classifies it.", C.bad],
     ["Schema drift undetected at Bronze", "Three of four drift kinds null 100% of a column silently.", C.bad],
     ["No incremental processing", "Silver and Gold are full-refresh. Blocks experiment E3.", C.muted],
     ["Azure never applied", "terraform validate passes, Checkov 36/0, but plan needs credentials.", C.muted],
@@ -602,7 +604,7 @@ const td = (t, o = {}) => ({ text: t, options: { color: C.text, ...o } });
   s.addText("A limitation reached before the examiner does is evidence of judgement rather than a hole.", {
     x: 0.6, y: 6.1, w: 12.1, h: 0.35, fontFace: BODY, fontSize: 12.5, italic: true, color: C.dim, margin: 0,
   });
-  s.addNotes("Volunteer the landing-zone one. It is the only finding that contradicts a claim the report makes.");
+  s.addNotes("Volunteer the unclassified-data one. It is what is left of the landing-zone finding after ADR 0022 closed the plaintext half, and it is the safe failure rather than the right one: the data is protected but still unclassified, and nothing forces that decision.");
 }
 
 // ==================================================== 15. ON HARDWARE
@@ -662,8 +664,8 @@ const td = (t, o = {}) => ({ text: t, options: { color: C.text, ...o } });
   });
 
   s.addText(
-    "The tool that produced the central finding also found a plaintext leak in the architecture that wrote it.",
-    { x: 0.6, y: 6.2, w: 12.1, h: 0.4, align: "center", fontFace: HEAD, fontSize: 14, italic: true, color: C.dim, margin: 0 }
+    "The checks found two holes in the architecture that wrote them.",
+    { x: 0.6, y: 6.3, w: 12.1, h: 0.4, align: "center", fontFace: HEAD, fontSize: 14, italic: true, color: C.dim, margin: 0 }
   );
   s.addNotes("Close on the method, not the platform. Every claim has a check behind it, and the checks found things.");
 }
