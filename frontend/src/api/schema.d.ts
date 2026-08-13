@@ -166,6 +166,17 @@ export interface paths {
          *     Averaging per-family F1 weights a family with three defects the same as one with
          *     four hundred. Summing TP/FP/FN and dividing once is the micro-average, and it is
          *     the number that answers "how good is the quality layer on this dataset".
+         *
+         *     **Two micro-averages are returned, and the second is the honest one.** At Bronze
+         *     a duplicate and a legitimate redelivery are byte-identical, so every redelivered
+         *     row counts as a false positive for ``duplicate_record`` -- 19,855 of them on
+         *     ``financial/transaction`` alone, which drags that dataset's precision from 0.84
+         *     to 0.14. That number measures the layer's blindness, not the rules.
+         *
+         *     The exclusion is computed here rather than left to callers. A client that had to
+         *     subtract the contaminated family itself would be computing a metric, which is
+         *     exactly what ADR 0016 forbids -- and the first client that forgot would publish
+         *     0.14 as a result.
          */
         get: operations["summary_evaluation_summary_get"];
         put?: never;
