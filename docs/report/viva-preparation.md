@@ -254,6 +254,39 @@ Rehearse these. An examiner who finds one you have not thought about will press 
 > hard-coded a virtualenv path and so was silently local-only. Both are in the
 > commit history rather than tidied away.
 
+### "You wrote the Azure infrastructure. Why didn't you just deploy it?"
+
+**This is the sharpest remaining question. Answer it with the defect, not the
+credentials.**
+
+> Credentials are the smaller half. The real answer is that the platform could not
+> run on it if I did, and I found that out by writing the runbook rather than by
+> deploying.
+>
+> `AttestationBackend.produce_measurement()` raises for every backend that isn't
+> `sim`. Nothing reads a SEV-SNP report. So setting `TEE_BACKEND=snp-cvm` flips
+> `is_measured` to True and every label to MEASURED — those key off the enum alone —
+> and then the first attestation fails, and with it every key release. The
+> infrastructure would come up and the platform would refuse to run on it.
+>
+> That is the *designed* behaviour and I'd defend it: a silent fallback to the
+> self-measured value would let a misconfigured deployment claim hardware rooting it
+> doesn't have, which is the worst failure this project could have. What was wrong
+> was section 9, which said the change was "configuration plus one Java class". It
+> omitted this. I corrected the section rather than quietly closing the gap.
+
+**If pressed — "so why not write it?"**
+
+> Because it can only be tested on the hardware. Reading `/dev/sev-guest` or the
+> vTPM NV index and exchanging the report for an MAA token is perhaps a day's work,
+> and none of it can be verified from a laptop. Shipping an untested hardware path
+> and calling the deployment ready is exactly the failure the whole project is
+> organised against — it's the same shape as the first Bronze verification that
+> reported a pass on unencrypted data.
+>
+> There's a test pinning the current behaviour instead: the labels flip, and
+> attestation refuses. It's written to be deleted when the reader lands.
+
 ### "Your violation detector now reports nothing. How do I know it still works?"
 
 > Because it no longer returns a conclusion — it scans the landing zone for the
@@ -354,9 +387,10 @@ Rehearse these. An examiner who finds one you have not thought about will press 
 
 ### "If you had another month?"
 
-> Two things, in order. **Deploy to Azure once** — roughly a day's work, mostly the
-> KMS client, and it would replace the single largest caveat in the dissertation
-> with a measurement. **Build incremental Silver and Gold**, which unblocks E3 and
+> Two things, in order. **Write the SEV-SNP report reader and deploy to Azure** —
+> that is the one change that replaces the single largest caveat in the dissertation
+> with a measurement, and I know precisely what it is because writing the runbook
+> forced me to find it. **Build incremental Silver and Gold**, which unblocks E3 and
 > is the largest missing piece of pipeline.
 >
 > There was a third until this week. The landing-zone hole is closed (ADR 0022) and

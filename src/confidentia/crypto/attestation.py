@@ -197,9 +197,20 @@ class AttestationBackend:
         # than silently falling back to the simulated value: a silent fallback
         # would let a misconfigured deployment claim hardware rooting it does not
         # have, which is the single most damaging failure this project could have.
+        #
+        # The message names the gap rather than describing the symptom, because the
+        # symptom is misleading. Selecting this backend flips `is_measured` to True
+        # and every label to MEASURED *before* reaching here, so a deployment that
+        # gets this far looks — in settings, in `confidentia info`, in the dashboard
+        # banner — like it succeeded. What actually happens is that every key
+        # release fails and the pipeline cannot run at all.
         raise AttestationError(
-            f"backend {self.backend.value} is selected but no hardware attestation "
-            "source is available on this host"
+            f"backend {self.backend.value} is selected, and this host has no hardware "
+            "attestation source. Nothing reads the SEV-SNP report: on an Azure "
+            "confidential VM that means /dev/sev-guest or the vTPM NV index, "
+            "exchanged for an MAA token. It is not written, and it is not a "
+            "configuration gap — see docs/architecture/azure.md step 2. "
+            "Until it is, the only backend that can attest is 'sim'."
         )
 
     def attest(self, nonce: str, claims: dict[str, Any] | None = None) -> AttestationEvidence:

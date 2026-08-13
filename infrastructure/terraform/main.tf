@@ -57,6 +57,7 @@ module "key_management" {
   location            = azurerm_resource_group.main.location
   tenant_names        = var.tenant_names
   admin_object_ids    = var.admin_object_ids
+  deploy_managed_hsm  = var.deploy_managed_hsm
   tags                = local.tags
 }
 

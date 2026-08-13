@@ -9,8 +9,19 @@
 #     -var="admin_ssh_public_key=$(cat ~/.ssh/id_ed25519.pub)" \
 #     -var='admin_object_ids=["<your-entra-object-id>"]'
 
+# **This file deploys the Managed HSM.** Purge protection is required for it and
+# cannot be disabled after creation, so `terraform destroy` soft-deletes rather
+# than removes it, and it bills through the retention period. Use
+# `environments/measure.tfvars` for a deployment you can tear down the same day —
+# it gives the real SEV-SNP measurement this project needs and leaves out the one
+# resource that is a commitment. See docs/deploy.md.
+
 project     = "confidentia"
 environment = "dev"
+
+# The full C2 architecture: key release the hardware enforces, not a policy the
+# application honours. Read the resource comment in modules/key_management first.
+deploy_managed_hsm = true
 
 # North Europe offers DCasv5 confidential VMs and an attestation provider, and is
 # the closest such region to where this project is being written. Availability

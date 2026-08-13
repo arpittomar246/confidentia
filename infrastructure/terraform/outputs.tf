@@ -8,7 +8,17 @@ output "attestation_uri" {
 }
 
 output "managed_hsm_uri" {
-  value = module.key_management.managed_hsm_uri
+  description = "Empty when deploy_managed_hsm is false."
+  value       = module.key_management.managed_hsm_uri
+}
+
+# Stated as an output rather than left to be inferred from an empty URI. A
+# deployment that attests but cannot enforce key release is a legitimate and much
+# cheaper configuration, and the one thing worse than running it is running it
+# without knowing which of the two you have.
+output "key_release_enforced" {
+  description = "True only when the Managed HSM exists. False means attestation is real and key release is not."
+  value       = module.key_management.managed_hsm_deployed
 }
 
 output "planned_tenant_keys" {

@@ -110,8 +110,20 @@ other reasons.
 
 Nothing in `pipelines/`, `quality/`, `evaluation/` or `lineage/` changes. That is
 the argument for the abstraction: the confidentiality boundary was a design
-parameter from Stage 1, so moving it is configuration and one Java class rather
-than a rewrite.
+parameter from Stage 1, so moving it touches the seams built for it rather than
+requiring a rewrite.
+
+**This section used to end "configuration and one Java class", which contradicted
+the five items above it.** Item 2 is Python, in a measured package, and item 4
+changes who decides a key release. Preparing the deployment is what caught it:
+`produce_measurement()` raises for every non-`sim` backend, so today
+`TEE_BACKEND=snp-cvm` flips every label to MEASURED and then fails every
+attestation. The infrastructure comes up; the platform refuses to run on it.
+
+Item 2 is the blocker, and it cannot be written honestly from here — the code paths
+it needs (`/dev/sev-guest`, the vTPM NV index, an MAA token exchange) can only be
+tested on the hardware. Writing it untested and calling the deployment ready would
+be the exact failure this project spent sixteen stages avoiding.
 
 ## What this would cost to prove
 

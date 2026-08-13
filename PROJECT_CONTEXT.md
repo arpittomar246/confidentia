@@ -1175,6 +1175,19 @@ data the answer is full-disk encryption, not trusting an unlink.
   been caught by signing in and asserting each module renders.
 - **Persist C5 plans.** They print or write JSON; there is no `platform.enclave_plan`
   table and the API does not serve them, so the dashboard cannot show the boundary.
+- **Write the SEV-SNP report reader before deploying to Azure.** The Terraform
+  validates, formats and scans clean (Checkov 36/0), and `terraform plan` stops only
+  on authentication. But `AttestationBackend.produce_measurement()` raises for every
+  non-`sim` backend, so `TEE_BACKEND=snp-cvm` flips every label to MEASURED and then
+  fails every attestation and every key release: **the infrastructure would come up
+  and the platform would refuse to run on it.** The gap is
+  `docs/architecture/azure.md` step 2 and it can only be written and tested on the
+  hardware. Runbook: `docs/deploy.md`.
+- **`deploy_managed_hsm` now defaults to false.** Purge protection is required for a
+  Managed HSM and cannot be disabled, so `terraform destroy` soft-deletes rather than
+  removes it and it bills through the retention period.
+  `environments/measure.tfvars` is the cheap, same-day-destroyable deployment;
+  `environments/dev.tfvars` is the full architecture and a commitment.
 - **Allow Node through Windows Firewall** so `npm run dev` is reachable. Until then,
   `bash scripts/serve_dashboard.sh`.
 

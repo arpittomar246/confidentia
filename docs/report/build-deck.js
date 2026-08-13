@@ -589,7 +589,7 @@ const td = (t, o = {}) => ({ text: t, options: { color: C.text, ...o } });
     ["Deleted data is unlinked, not shredded", "Freed blocks survive until reused. The answer is full-disk encryption.", C.warn],
     ["Schema drift undetected at Bronze", "Three of four drift kinds null 100% of a column silently.", C.bad],
     ["No incremental processing", "Silver and Gold are full-refresh. Blocks experiment E3.", C.muted],
-    ["Azure never applied", "terraform validate passes, Checkov 36/0, but plan needs credentials.", C.muted],
+    ["Azure never applied", "Validates and scans clean. But nothing reads a SEV-SNP report yet — see slide 15.", C.bad],
     ["Key release proves hardware, not code", "Any Azure confidential VM meeting the claims obtains the key.", C.warn],
   ];
   lim.forEach(([h, b, col], i) => {
@@ -610,31 +610,34 @@ const td = (t, o = {}) => ({ text: t, options: { color: C.text, ...o } });
 // ==================================================== 15. ON HARDWARE
 {
   const s = base(pres.addSlide());
-  title(s, "What changes on real hardware", "Configuration, plus one Java class");
+  title(s, "What changes on real hardware", "Less than a rewrite, and more than this slide used to claim");
 
   const rows = [
     [th("Today"), th("On Azure"), th("What changes")],
     [td("SHA-256 of the source tree"), td("SEV-SNP report signed by AMD"), td("The process can no longer produce its own measurement", { color: C.muted })],
     [td("Verifier in attestation.py"), td("Microsoft Azure Attestation"), td("A third party decides whether evidence is genuine", { color: C.muted })],
     [td("broker.py, four refusal paths"), td("Managed HSM key release policy"), td("Refusal becomes enforceable, not voluntary", { color: C.muted })],
-    [td("LocalKmsClient.java"), td("KMS client backed by Managed HSM"), td("The one piece of real work", { color: C.warn })],
+    [td("LocalKmsClient.java"), td("KMS client backed by Managed HSM"), td("Real Java work, and not the blocker", { color: C.muted })],
+    [td("produce_measurement() raises"), td("Read /dev/sev-guest, exchange for an MAA token"), td("NOT WRITTEN — the blocker", { color: C.bad, bold: true })],
   ];
-  tableOn(s, rows, { x: 0.6, y: 1.9, w: 12.1, colW: [3.5, 3.9, 4.7], rowH: 0.46, fontSize: 11.5 });
+  // Row height trimmed when a fifth row was added: at 0.46 the table ran under the
+  // two cards below it.
+  tableOn(s, rows, { x: 0.6, y: 1.9, w: 12.1, colW: [3.5, 3.9, 4.7], rowH: 0.40, fontSize: 11 });
 
-  card(s, { x: 0.6, y: 4.5, w: 5.9, h: 1.9 });
-  s.addText("What becomes true", { x: 0.9, y: 4.68, w: 5.3, h: 0.3, fontFace: BODY, fontSize: 13, bold: true, color: C.good, margin: 0 });
+  card(s, { x: 0.6, y: 4.6, w: 5.9, h: 1.85 });
+  s.addText("What becomes true", { x: 0.9, y: 4.76, w: 5.3, h: 0.3, fontFace: BODY, fontSize: 13, bold: true, color: C.good, margin: 0 });
   s.addText(
     `Attestation stops being self-issued. The four refusal paths stay exactly as they are and become enforceable. C5's modelled ${TIMES}1.206 becomes a measurement; the placement itself does not change, because it is derived from the contracts.`,
-    { x: 0.9, y: 5.08, w: 5.3, h: 1.2, fontFace: BODY, fontSize: 11.5, color: C.text, margin: 0 }
+    { x: 0.9, y: 5.14, w: 5.3, h: 1.2, fontFace: BODY, fontSize: 11, color: C.text, margin: 0 }
   );
 
-  card(s, { x: 6.8, y: 4.5, w: 5.9, h: 1.9 });
-  s.addText("What does not", { x: 7.1, y: 4.68, w: 5.3, h: 0.3, fontFace: BODY, fontSize: 13, bold: true, color: C.bad, margin: 0 });
+  card(s, { x: 6.8, y: 4.6, w: 5.9, h: 1.85 });
+  s.addText("What I got wrong", { x: 7.1, y: 4.76, w: 5.3, h: 0.3, fontFace: BODY, fontSize: 13, bold: true, color: C.bad, margin: 0 });
   s.addText(
-    "The policy proves the hardware, not the code. Any Azure confidential VM meeting the claims obtains the key. Pinning the workload needs confidential containers, a materially different deployment.",
-    { x: 7.1, y: 5.08, w: 5.3, h: 1.2, fontFace: BODY, fontSize: 11.5, color: C.text, margin: 0 }
+    "This slide used to say \"configuration plus one Java class\". Writing the runbook proved otherwise: nothing reads a SEV-SNP report, so selecting the backend flips every label to MEASURED and then fails every key release. The infrastructure would come up and the platform would refuse to run on it.",
+    { x: 7.1, y: 5.14, w: 5.3, h: 1.2, fontFace: BODY, fontSize: 11, color: C.text, margin: 0 }
   );
-  s.addNotes("Nothing in pipelines, quality, evaluation or lineage changes. That is the payoff for treating the boundary as a design parameter from stage 1.");
+  s.addNotes("Volunteer the correction. Nothing in pipelines, quality, evaluation or lineage changes — that part was and is true, and it is the payoff for treating the boundary as a design parameter from stage 1. What was overstated is how little code the swap needs. The separate limitation, that the key release policy proves the hardware rather than the code, is on the limitations slide.");
 }
 
 // ==================================================== 16. CONCLUSION

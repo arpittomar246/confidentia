@@ -85,6 +85,30 @@ variable "admin_object_ids" {
   default     = []
 }
 
+variable "deploy_managed_hsm" {
+  description = <<-EOT
+    Create the Managed HSM that holds every tenant's wrapping key.
+
+    **This is the one resource here that cannot be undone in an afternoon.** Purge
+    protection is required for it and cannot be disabled after creation, so
+    `terraform destroy` moves the HSM to a soft-deleted state that persists — and
+    continues to be billed — for the retention period. It is also the most
+    expensive resource in the configuration by a wide margin, billed per hour
+    whether or not a key is ever released.
+
+    False gives an environment that answers the question the dissertation actually
+    needs answered: a real SEV-SNP measurement, a real MAA token, and the enclave
+    overhead that is currently MODELLED. None of that needs the HSM. What is lost
+    is enforcement — the workload attests, but key release stays a policy the
+    application honours rather than one the hardware imposes.
+
+    Set true when the money and the retention window are both acceptable, and
+    read the resource comment in modules/key_management first.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "admin_ssh_public_key" {
   description = <<-EOT
     OpenSSH public key for the operator account on the confidential VM.

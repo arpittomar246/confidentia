@@ -24,6 +24,11 @@ variable "tenant_names" { type = list(string) }
 variable "admin_object_ids" { type = list(string) }
 variable "tags" { type = map(string) }
 
+variable "deploy_managed_hsm" {
+  description = "Create the Managed HSM. See the comment on the resource before setting true."
+  type        = bool
+}
+
 data "azurerm_client_config" "current" {}
 
 # Microsoft Azure Attestation. The remote party that decides whether an SEV-SNP
@@ -42,7 +47,21 @@ resource "azurerm_attestation_provider" "main" {
 # is also the expensive choice -- Managed HSM bills per hour whether or not a key
 # is used -- and that cost is the honest price of a key that a compromised host
 # cannot read.
+#
+# **Optional, and off by default in the measurement environment.** Purge protection
+# below cannot be disabled once set, so a Managed HSM is not a resource you can
+# create, measure and delete on a student subscription: `terraform destroy` moves it
+# to a soft-deleted state that persists for the retention period. Everything the
+# dissertation most needs from Azure -- a real SEV-SNP measurement, a real MAA
+# token, the enclave overhead that is currently MODELLED -- comes from the
+# confidential VM and the attestation provider, neither of which has that problem.
+#
+# So the HSM is gated. `deploy_managed_hsm = false` gives a deployment that can be
+# stood up and torn down in an afternoon; `true` gives the full architecture and a
+# commitment measured in months.
 resource "azurerm_key_vault_managed_hardware_security_module" "main" {
+  count = var.deploy_managed_hsm ? 1 : 0
+
   name                = substr(replace("hsm${var.name}", "-", ""), 0, 24)
   resource_group_name = var.resource_group_name
   location            = var.location
@@ -110,7 +129,17 @@ output "attestation_uri" {
 }
 
 output "managed_hsm_uri" {
-  value = azurerm_key_vault_managed_hardware_security_module.main.hsm_uri
+  # Empty rather than null when the HSM is not deployed: this is rendered into the
+  # VM's cloud-init environment file, and a null there fails the template at plan
+  # time with an error that says nothing about the flag that caused it.
+  value = var.deploy_managed_hsm ? one(azurerm_key_vault_managed_hardware_security_module.main[*].hsm_uri) : ""
+
+  description = "Empty when deploy_managed_hsm is false; the workload then attests but cannot release keys."
+}
+
+output "managed_hsm_deployed" {
+  value       = var.deploy_managed_hsm
+  description = "Whether key release is enforceable in this deployment, or only attestation."
 }
 
 output "workload_identity_id" {

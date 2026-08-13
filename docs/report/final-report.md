@@ -599,8 +599,15 @@ Stated as findings, because most of them were found by this project's own checks
 5. **`crypto.column_encryption` is declared and unread.** ADR 0007 names `envelope`
    as E4's baseline arm; the mode does not exist.
 
-6. **The Azure deployment has never been applied.** `terraform validate` passes and
-   Checkov reports 36/0, but `plan` requires credentials and has never run.
+6. **The Azure deployment has never been applied, and could not run the platform if
+   it were.** `terraform validate` passes, `fmt -check` passes and Checkov reports
+   36/0; `plan` builds the provider and stops on authentication. Preparing the
+   deployment (`docs/deploy.md`) also found the larger blocker: nothing reads a
+   SEV-SNP report, so `TEE_BACKEND=snp-cvm` flips every label to MEASURED and then
+   fails every attestation, and therefore every key release. **The infrastructure
+   would come up and the platform would refuse to run on it.** The gap is
+   `docs/architecture/azure.md` step 2, it can only be written and tested on the
+   hardware, and §9 previously understated it.
 
 7. **The Azure key release policy proves the hardware, not the code.** Any Azure
    confidential VM meeting the claims obtains the key; pinning the workload needs
@@ -624,10 +631,34 @@ Stated as findings, because most of them were found by this project's own checks
 are and become enforceable rather than voluntary. C5's modelled ×1.206 becomes a
 measurement; the *placement* does not change, because it is derived from contracts.
 
-The code change is small — configuration plus one Java class — because ADR 0007
-chose `PropertiesDrivenCryptoFactory` specifically so the KMS could be swapped.
-Nothing in `pipelines/`, `quality/`, `evaluation/` or `lineage/` changes. **That is
-the payoff for treating the boundary as a design parameter from Stage 1.**
+**The infrastructure is written and the code is not, and an earlier draft of this
+section said otherwise.** It claimed the change was "configuration plus one Java
+class". That was wrong, and preparing the deployment is what exposed it:
+
+- `AttestationBackend.produce_measurement()` raises for every non-`sim` backend.
+  Nothing reads a SEV-SNP report — on an Azure confidential VM that means
+  `/dev/sev-guest` or the vTPM NV index, exchanged for an MAA token. **It is not
+  written.**
+- `broker.py` decides locally. On Azure it must call the HSM's release endpoint,
+  keeping the audit table and the four refusal reasons but not the decision.
+
+The Java class was real and was only one of the items. The misleading part is worse
+than the omission: selecting `TEE_BACKEND=snp-cvm` flips `is_measured` to `True` and
+every label to MEASURED *before* attestation is attempted, so a deployment reaches
+the point of looking successful — in `confidentia info`, in the dashboard banner —
+and then fails every key release, and the pipeline cannot run at all. **The
+infrastructure would come up and the platform would refuse to run on it.**
+
+What *is* true is the claim underneath: nothing in `pipelines/`, `quality/`,
+`evaluation/` or `lineage/` changes, and the seams the swap needs — a `TeeBackend`
+that produces evidence separately from verifying it, a `KmsClient` interface behind
+`PropertiesDrivenCryptoFactory` (ADR 0007) — exist and were built for this. That is
+the payoff for treating the boundary as a design parameter from Stage 1. It is a
+smaller claim than the one this section used to make, and it is one the repository
+supports.
+
+The five remaining items are enumerated in `docs/architecture/azure.md`, and
+`docs/deploy.md` is the runbook for the deployment itself.
 
 ---
 
