@@ -92,7 +92,7 @@ jobs:
           file: ${{ matrix.dockerfile }}
           push: ${{ steps.mode.outputs.publish == 'true' }}
           load: ${{ steps.mode.outputs.publish != 'true' }}
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ steps.mode.outputs.publish == 'true' && steps.meta.outputs.tags || format('confidentia-{0}:dryrun', matrix.image) }}
           labels: ${{ steps.meta.outputs.labels }}
           # GitHub's cache, not the registry's: a dry run has nowhere to push a
           # cache manifest to.
@@ -103,14 +103,26 @@ jobs:
       # whose subject is provenance, "which packages went into this artefact" is
       # not an afterthought -- it is the same question the lineage chain answers
       # about data, asked about the build.
+      # Trivy as a pinned container rather than a marketplace action. The first
+      # version of this workflow used `aquasecurity/trivy-action@0.28.0`, which does
+      # not exist -- the tags carry a `v` prefix and start at v0.30 -- and every job
+      # failed in `Set up job` before building anything. The image is the same thing
+      # a developer runs by hand, and its version is one this project has actually
+      # used.
+      #
+      # A dry run has no pushed digest to scan, so it scans the locally loaded tag.
       - name: Generate SBOM
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          scan-type: image
-          image-ref: ${{ steps.mode.outputs.publish == 'true' && format('{0}/{1}-{2}@{3}', env.REGISTRY, github.repository, matrix.image, steps.build.outputs.digest) || format('{0}/{1}-{2}:{3}', env.REGISTRY, github.repository, matrix.image, steps.meta.outputs.version) }}
-          format: cyclonedx
-          output: sbom-${{ matrix.image }}.cdx.json
-          scanners: license,vuln
+        env:
+          IMAGE_REF: ${{ steps.mode.outputs.publish == 'true' && format('{0}/{1}-{2}@{3}', env.REGISTRY, github.repository, matrix.image, steps.build.outputs.digest) || format('confidentia-{0}:dryrun', matrix.image) }}
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD:/work" -w /work \
+            aquasec/trivy:0.73.0 image --quiet \
+            --scanners license,vuln --format cyclonedx \
+            --output "sbom-${{ matrix.image }}.cdx.json" \
+            "$IMAGE_REF"
+          echo "SBOM components: $(python3 -c "import json;print(len(json.load(open('sbom-${{ matrix.image }}.cdx.json')).get('components',[])))")"
 
       - uses: actions/upload-artifact@v4
         with:
