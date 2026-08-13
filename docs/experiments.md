@@ -4,14 +4,14 @@
 
 | | Experiment | State |
 |---|---|---|
-| **E1** | Streaming against batch throughput on the shared Bronze table | **designed, not run** — needs a Kafka broker up |
+| **E1** | Streaming against batch throughput on the shared Bronze table | **MEASURED** |
 | **E2** | Partition sizing: write time, file size, the EPC budget | **MEASURED** |
 | **E3** | Incremental against full reprocessing | **blocked** — the incremental arm does not exist |
 | **E4** | What Parquet Modular Encryption costs | **MEASURED** |
 | **E5** | — | **never defined** |
 | **E6** | — | **never defined** |
 | **E7** | — | **never defined** |
-| **E8** | Replay under a drifted schema | **designed, not run** |
+| **E8** | Replay under a drifted schema | **MEASURED** |
 
 E1–E4 and E8 are recovered from ADRs 0007, 0008, 0011 and 0014, which reference
 them by number. **E5, E6 and E7 appear nowhere in the repository** — not in an ADR,
@@ -138,32 +138,104 @@ project.
 
 ---
 
-## E1 — streaming against batch throughput **[DESIGNED, NOT RUN]**
+---
 
-ADR 0014 chose to have the Kafka consumer write the **same** Bronze table as batch,
-and notes the consequence: "Experiment E1 has to separate batch from streaming rows
-by `_source_system` rather than by table. That is a `WHERE` clause, not a design
-problem."
+## E1 — streaming against batch throughput **[MEASURED]**
 
-Kafka is installed (`~/kafka`). What E1 needs beyond what exists: a broker running,
-a producer driving a known rate, and a consumer run long enough for the steady state
-to dominate the startup cost. The Stage 9 report has a measured consumer run of
-31,231 ms for 60,000 rows, which is a data point rather than a controlled comparison
-— it was not warmed up, repeated or interleaved against a batch arm.
+60,000 records into Delta, one warm-up and three interleaved repeats, both arms
+writing the same envelope into the same format and differing only in source.
+
+| Arm | p50 | p90 | rows/s | vs batch |
+|---|---|---|---|---|
+| batch_file | 2.06 s | 2.35 s | **29,143** | — |
+| streaming_kafka | 8.79 s | 9.08 s | **6,826** | **×4.27** |
+
+**Streaming costs 4.27× the wall clock of batch for the same rows.** The producer
+itself sustains ~26,000 records/s, so the cost is on the consume side: micro-batch
+orchestration, checkpoint commits and Kafka fetch, none of which a Parquet read
+pays.
+
+That is the honest price of the property streaming buys — records land seconds
+after they occur rather than whenever the next batch runs — and it is a price worth
+knowing before choosing the path for a dataset.
+
+### It does not drive the real CLI, and that is deliberate
+
+`stream consume` against `bronze write` cannot be repeated: batch ingestion is
+content-addressed and idempotent, so runs two through five would measure a skipped
+no-op, and the consumer's checkpoint does the same. Both arms therefore run the same
+Spark work against scratch outputs with the checkpoint cleared per repeat. The
+idempotency machinery is Stage 3's subject; this measures the ingestion path.
+
+### The first run was not a comparison
+
+It reported ×6.73 — with the streaming arm processing **120,000** rows against the
+batch arm's 60,000. `startingOffsets: earliest` with a fresh checkpoint re-reads the
+whole topic, which still held Stage 9's records. Resetting the topic and producing a
+known 60,000 gave the numbers above. A throughput ratio between arms handling
+different volumes is not a ratio.
+
+### And it exposed a real asymmetry between the paths
+
+The batch arm first failed outright:
+
+```
+SchemaColumnConvertNotSupportedException: column: [amount],
+physicalType: DOUBLE, logicalType: string
+```
+
+The contract declares `amount` as `string`; the generator writes a DOUBLE. Reading
+Parquet with the contract's schema imposed rejects that. **The Kafka arm never sees
+it**, because its payload is JSON and `from_json` coerces silently.
+
+So the streaming path accepts a type mismatch the batch path refuses. Neither is
+wrong — Bronze is supposed to accept what arrived — but they do not behave the same,
+and nothing in the platform said so before this experiment.
 
 ---
 
-## E8 — replay under a drifted schema **[DESIGNED, NOT RUN]**
+## E8 — replay under a drifted schema **[MEASURED]**
 
-ADR 0008 gives the generator per-chunk deterministic seeding specifically so that
-"E8 replays a dataset under a drifted schema", and the `generator-determinism` CI
-job protects that property on every push.
+60,000 rows replayed through `_apply_contract` under four drifts, against an
+undrifted baseline of the same rows.
 
-What E8 needs: a drifted variant of a contract (a column added, a type widened, a
-column dropped), the same seed replayed through it, and a measurement of what the
-pipeline does — how many rows quarantine, whether Bronze accepts the write, what the
-quality score does. The determinism it depends on is already verified in CI; the
-drift harness is not written.
+| Drift | Accepted | Rows nulled | Rate | Also |
+|---|---|---|---|---|
+| baseline | yes | 0 | 0.0% | — |
+| column_added | yes | 0 | 0.0% | `loyalty_tier` **silently dropped** |
+| column_dropped | yes | 60,000 | **100.0%** | — |
+| type_violation | yes | 60,000 | **100.0%** | `event_ts` unparseable |
+| column_renamed | yes | 60,000 | **100.0%** | `txn_amount` **silently dropped** |
+
+**Every drift is accepted. Three of the four destroy 100% of a column, silently, at
+Bronze.**
+
+That is the design working as specified, not a bug: `_apply_contract` casts
+permissively because "Bronze must accept what arrived", and a declared-but-absent
+column is materialised as a typed NULL so the table shape stays stable. Losing the
+batch would be worse.
+
+But it means **detection is entirely downstream**. Nothing at Bronze raises,
+warns, or records that a source changed shape. The quality layer would see the
+nulls — `null_violation` is one of its rules — and the promotion gate would block on
+the score. A renamed column that nobody notices is a Gold measure that quietly
+becomes zero.
+
+The `column_added` case is the one worth flagging: a field the source started
+sending is **dropped without any record that it existed**. There is no signal at all,
+because there are no nulls to detect.
+
+### One arm had to be redesigned mid-experiment
+
+`type_violation` first targeted `amount` and reported 0.0% — true, and measuring
+nothing. **Every column in this Bronze contract is declared `string`** except two
+timestamps, a boolean and the partition date: Bronze keeps raw values as text and
+Silver does the typing. So "the source sent a string where a number was" cannot fail
+at Bronze by construction.
+
+Retargeting at `event_ts`, which the contract genuinely types, produced the 100%
+above. The finding stands on its own: **type drift is undetectable at Bronze for
+almost every column in this platform**, by design, and Silver is where it surfaces.
 
 ---
 
@@ -194,6 +266,8 @@ would be accurate rather than retrofitted.
 export CONFIDENTIA_KEYSTORE_PASSPHRASE=...     # E4 needs key release
 confidentia bench e4 --rows 3000000 --repeats 5
 confidentia bench e2 --rows 3000000 --repeats 3
+confidentia bench e1 --records 60000     # needs: kafka.sh reset --yes, then stream produce
+confidentia bench e8 --rows 60000
 confidentia bench results
 ```
 

@@ -1306,6 +1306,38 @@ def bench_e2(
     e2_partitioning.main(rows=rows, repeats=repeats)
 
 
+@bench_app.command("e1")
+def bench_e1(
+    records: Annotated[int, typer.Option(help="Records each arm ingests.")] = 60_000,
+    repeats: Annotated[int, typer.Option(help="Timed repeats after warm-up.")] = 3,
+) -> None:
+    """E1 - streaming against batch throughput into the same Bronze table.
+
+    Needs a broker (`bash scripts/kafka.sh start`) holding exactly the records this
+    compares against. The streaming arm reads from `earliest` with a fresh
+    checkpoint each repeat, so anything left in the topic from an earlier run is
+    counted too and the arms stop being comparable -- reset with
+    `bash scripts/kafka.sh reset --yes` and re-produce first.
+    """
+    from confidentia.benchmarks import e1_streaming
+
+    e1_streaming.main(records=records, repeats=repeats)
+
+
+@bench_app.command("e8")
+def bench_e8(
+    rows: Annotated[int, typer.Option(help="Rows replayed under each drift.")] = 60_000,
+) -> None:
+    """E8 - what the pipeline does when a source schema drifts.
+
+    Measures behaviour rather than time: how many rows lose a column's value when a
+    source adds, drops, renames or corrupts a field.
+    """
+    from confidentia.benchmarks import e8_schema_drift
+
+    e8_schema_drift.main(rows=rows)
+
+
 @bench_app.command("results")
 def bench_results(
     experiment: Annotated[str | None, typer.Argument(help="E2, E4, ... or omit for all.")] = None,
