@@ -200,11 +200,11 @@ const td = (t, o = {}) => ({ text: t, options: { color: C.text, ...o } });
   });
 
   const stats = [
-    ["20,514", "lines of Python", C.text],
-    ["381", "tests", C.good],
+    ["20,777", "lines of Python", C.text],
+    ["386", "tests", C.good],
     ["14", "CI jobs", C.good],
     ["422,297", "Bronze rows", C.accent],
-    ["18 / 19", "ADRs / stage reports", C.muted],
+    ["19 / 19", "ADRs / stage reports", C.muted],
   ];
   stats.forEach(([v, l, col], i) => stat(s, 0.6 + i * 2.44, 3.85, 2.3, v, l, col));
 
@@ -482,10 +482,10 @@ const td = (t, o = {}) => ({ text: t, options: { color: C.text, ...o } });
   card(s, { x: 0.6, y: 5.05, w: 12.1, h: 1.35 });
   s.addText("And closing it exposed a second one, which is worse", { x: 0.95, y: 5.22, w: 11.4, h: 0.32, fontFace: HEAD, fontSize: 14, bold: true, color: C.warn, margin: 0 });
   s.addText(
-    "The migration found healthcare/patient_change: 900 rows, no schema contract at all. Never promoted, because Bronze refuses what it cannot type. Never classified. Never encrypted — not because anything decided it should not be, but because nothing knew it was there.",
-    { x: 0.95, y: 5.6, w: 11.4, h: 0.7, fontFace: BODY, fontSize: 12.5, color: C.text, margin: 0 }
+    "The migration found healthcare/patient_change: 900 rows, no schema contract at all. Never promoted, never classified, never encrypted — not because anything decided it should not be, but because nothing knew it was there. Deleted, not contracted (ADR 0023): its effects already reach the lake as patient_cdc. The ingest ledger keeps the record, marked withdrawn.",
+    { x: 0.95, y: 5.6, w: 11.4, h: 0.7, fontFace: BODY, fontSize: 12, color: C.text, margin: 0 }
   );
-  s.addNotes("Volunteer both. An examiner who finds one themselves will press much harder than one who is handed it. The line that lands: every check I had built covered the path the data was supposed to take.");
+  s.addNotes("Volunteer both. An examiner who finds one themselves will press much harder than one who is handed it. The line that lands: every check I had built covered the path the data was supposed to take. If pressed on why deleted rather than contracted — a contract is a commitment to a Bronze table, quality rules and a Silver path, for data already in the lake by a better route.");
 }
 
 // ================================================== 12. EVALUATION
@@ -586,7 +586,7 @@ const td = (t, o = {}) => ({ text: t, options: { color: C.text, ...o } });
 
   const lim = [
     ["No TEE hardware", "Enclave figures are modelled. Attestation is a mechanism, not a guarantee.", C.warn],
-    ["Unclassified data is over-protected", "patient_change is encrypted under the PHI key because nothing classifies it.", C.bad],
+    ["Deleted data is unlinked, not shredded", "Freed blocks survive until reused. The answer is full-disk encryption.", C.warn],
     ["Schema drift undetected at Bronze", "Three of four drift kinds null 100% of a column silently.", C.bad],
     ["No incremental processing", "Silver and Gold are full-refresh. Blocks experiment E3.", C.muted],
     ["Azure never applied", "terraform validate passes, Checkov 36/0, but plan needs credentials.", C.muted],
@@ -604,7 +604,7 @@ const td = (t, o = {}) => ({ text: t, options: { color: C.text, ...o } });
   s.addText("A limitation reached before the examiner does is evidence of judgement rather than a hole.", {
     x: 0.6, y: 6.1, w: 12.1, h: 0.35, fontFace: BODY, fontSize: 12.5, italic: true, color: C.dim, margin: 0,
   });
-  s.addNotes("Volunteer the unclassified-data one. It is what is left of the landing-zone finding after ADR 0022 closed the plaintext half, and it is the safe failure rather than the right one: the data is protected but still unclassified, and nothing forces that decision.");
+  s.addNotes("The shredding one is what is left of the landing-zone finding after ADR 0022 encrypted it and ADR 0023 resolved the unclassified dataset it exposed. State it as a boundary of the claim rather than a defect: this project does not attempt disk-level erasure and does not pretend to.");
 }
 
 // ==================================================== 15. ON HARDWARE

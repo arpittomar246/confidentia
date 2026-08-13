@@ -3,7 +3,7 @@
 Handoff document for **CONFIDENTIA**. Written so development can continue without
 re-deriving anything. Current as of **Stage 16 + ADR 0022 — all sixteen stages complete, landing zone encrypted** (14 CI jobs green plus
 security and release workflows,
-304 unit + 77 integration tests,
+309 unit + 77 integration tests,
 **all five contributions delivered**, API and dashboard live, containers building,
 Prometheus and Grafana wired to the pipeline's own tables).
 
@@ -218,7 +218,7 @@ and are not meant to.
 ├── orchestration/dags/           6 DAGs + confidentia_common.py   Stages 8-9b
 ├── tests/  (conftest + 12 unit + 1 integration + 2 api)  333 tests
 ├── scripts/  (operational scripts, see §9)
-├── docs/adr/ (18 ADRs)  docs/stage-reports/ (18 reports)
+├── docs/adr/ (19 ADRs)  docs/stage-reports/ (18 reports)
 ├── frontend/                     Vite + React + TS, 9 modules (Stage 11)
 ├── docker/{backend,frontend,spark,airflow}/  four images, all built (Stage 13)
 ├── docs/api/openapi.json         Committed schema; CI fails if stale
@@ -1151,10 +1151,22 @@ the same attestation-released keys as Bronze at a measured ×1.014 storage cost,
 detector now reads the disk instead of returning a fixed conclusion, and
 `scripts/verify_landing.sh` re-proves it in four separate OS processes.
 
-**What is left of it:** `healthcare/patient_change` is encrypted under the PHI key
-because no schema contract classifies it. That is the safe failure, not the right
-one — the data cannot be promoted or evaluated until someone writes a contract or
-deletes it, and nothing currently forces that decision.
+**The unclassified dataset it exposed is resolved** (ADR 0023).
+`healthcare/patient_change` was source-side tooling — `oltp_loader` replays it into
+Postgres for the CDC collector to observe, and its effects reach the lake as
+`patient_cdc`, which is contracted. It was withdrawn rather than given a contract;
+the `platform.ingest_batch` row is kept and marked `withdrawn_at`, so the ledger
+still answers what arrived. `confidentia landing withdrawn` prints the trail.
+
+**The rule that stops it recurring:** the catalog decides what the lake ingests, not
+the shape of a directory tree. `FileCollector.available_datasets` returns manifested
+*and* contracted datasets. That also fixed a bug ADR 0022 introduced — a wildcard
+`ingest file healthcare` would have aborted on the uncontracted directory, taking
+`rebuild_pipeline.sh` with it. **A guard that fails closed is only safe if every
+caller can survive the refusal.**
+
+**What is left:** freed blocks are unlinked, not shredded. On a lake holding real
+data the answer is full-disk encryption, not trusting an unlink.
 
 ### Optional, and genuinely useful
 

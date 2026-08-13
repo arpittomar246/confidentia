@@ -100,7 +100,7 @@ bash scripts/verify_landing.sh --no-spark
 ```
 
 > "Footer magic on every file, a raw-byte grep for SSN and email patterns, and a
-> keyless read that has to be refused. Twenty-four files, zero identifier-shaped
+> keyless read that has to be refused. Twenty-three files, zero identifier-shaped
 > strings.
 >
 > The awkward part was that Bronze is written by Spark and ingestion is pandas, so
@@ -120,9 +120,24 @@ And the part worth conceding before being asked:
 > can't type. Never classified. Never encrypted, not because anything decided it
 > shouldn't be, but because nothing knew it was there.
 >
-> Ingestion now refuses to land a dataset the catalog doesn't declare. But the
-> general lesson is the uncomfortable one: the checks I'd built all covered the
-> path data was supposed to take."
+> It's a source-side mutation script — the CDC path replays it into Postgres, and
+> its effects reach the lake as `patient_cdc`, which is contracted and encrypted. So
+> I deleted it rather than writing a contract for it."
+
+```bash
+confidentia landing withdrawn
+```
+
+> "The ingest ledger keeps the record. Deleting the files while the registry still
+> said 'ingested' would make it lie about what's on disk; deleting the row would
+> erase the fact this ever arrived, which is the one question the landing zone
+> exists to answer. So the row stays, marked withdrawn, with the reason.
+>
+> And the rule that stops it recurring is one line: the catalog decides what the
+> lake ingests, not the shape of a directory tree.
+>
+> The uncomfortable general lesson, which I'd rather say than be asked: every check
+> I'd built covered the path the data was *supposed* to take."
 
 ### 4 · Attestation refusing (90 seconds)
 
@@ -192,7 +207,7 @@ confidentia bench results
 
 ### 8 · Close (30 seconds)
 
-> "Five contributions, six of eight experiments measured, 381 tests, 14 CI jobs.
+> "Five contributions, six of eight experiments measured, 386 tests, 14 CI jobs.
 >
 > The result I didn't expect is that tokenising identifiers doesn't shrink the
 > boundary — quasi-identifiers do that work, which makes disclosure control

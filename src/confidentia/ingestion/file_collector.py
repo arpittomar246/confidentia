@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from confidentia.catalog.contracts import CONTRACTS
 from confidentia.common.hashing import sha256_file
 from confidentia.common.logging import get_logger
 from confidentia.config.settings import get_settings
@@ -231,10 +232,39 @@ class FileCollector:
             )
 
     def available_datasets(self, tenant: str) -> list[str]:
+        """Datasets a wildcard ingest should collect: manifested *and* contracted.
+
+        The manifest test alone is what landed ``healthcare/patient_change`` — a
+        source-side mutation script the generator writes to ``raw/`` alongside real
+        datasets, replayed into Postgres by ``oltp_loader`` for the CDC collector to
+        observe, and never intended to reach the lake. It has a manifest because
+        everything the generator writes has one, so a directory-shaped rule swept it
+        up, and it then sat in the landing zone unclassified and unencrypted because
+        Bronze refused it and nothing upstream did (ADR 0022, ADR 0023).
+
+        **The catalog decides what the lake ingests, not the shape of a directory
+        tree.** Filtering here rather than failing in ``collect`` matters: since
+        ADR 0022 an uncontracted write is refused, so a sweep that still offered
+        this directory would abort the whole tenant's ingest on it. A *targeted*
+        ``ingest file healthcare patient_change`` still fails, loudly, which is the
+        right answer to someone asking for it by name.
+        """
         base = self.root / tenant
         if not base.exists():
             return []
-        return sorted(d.name for d in base.iterdir() if (d / MANIFEST_NAME).exists())
+
+        manifested = sorted(d.name for d in base.iterdir() if (d / MANIFEST_NAME).exists())
+        contracted = [name for name in manifested if (tenant, name) in CONTRACTS]
+
+        skipped = sorted(set(manifested) - set(contracted))
+        if skipped:
+            logger.info(
+                "ingest_skipping_uncontracted",
+                tenant=tenant,
+                datasets=skipped,
+                hint="no schema contract; not a lake dataset",
+            )
+        return contracted
 
 
 def _read_any(path: Path) -> pd.DataFrame:

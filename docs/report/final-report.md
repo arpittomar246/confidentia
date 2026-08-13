@@ -44,8 +44,9 @@ the landing zone wrote unencrypted Parquet, and a single landing file was found 
 contain 19 SSN-shaped strings. It has since been closed — landing is encrypted
 under the same attestation-released keys as Bronze, at a measured ×1.014 storage
 cost — and the closing turned up a second, quieter problem: a dataset that had sat
-in the landing zone for four days with no schema contract, and so had never been
-promoted, classified or protected, because nothing knew it was there.
+in the landing zone with no schema contract, and so had never been promoted,
+classified or protected, because nothing knew it was there. It was source-side
+tooling that had never belonged in the lake, and has been withdrawn.
 
 **There is no confidential-computing hardware behind this work.** The TEE layer is
 an abstraction with a simulated backend. Every number derived from it is labelled
@@ -145,11 +146,11 @@ we receive on Tuesday"; Silver answers "what happened on Tuesday".
 
 | | |
 |---|---|
-| Python | 20,514 lines across `src/` |
-| Tests | 381 (304 unit, 77 integration) |
+| Python | 20,777 lines across `src/` |
+| Tests | 386 (309 unit, 77 integration) |
 | CI | 14 jobs, plus security and release workflows |
 | Migrations | 11 forward-only SQL migrations |
-| Design records | 18 ADRs, 19 stage reports |
+| Design records | 19 ADRs, 19 stage reports |
 | Data processed | 422,297 Bronze rows across 11 datasets, two tenants |
 
 ---
@@ -392,9 +393,32 @@ cannot type. Never quality checked or classified, for the same reason. And never
 encrypted — not because anything decided it should not be, but because nothing knew
 it was there. It is a source-side mutation script the CDC path replays into
 Postgres, never intended to be a lake dataset, and a collector pointed at a
-directory tree landed it anyway. Ingestion now refuses to land a dataset the catalog
-does not declare, and the migration encrypts unclassified data rather than skipping
-it — which protects it without pretending to classify it.
+directory tree landed it anyway. The migration encrypted it rather than skipping it,
+which protected it without pretending to classify it.
+
+**ADR 0023 resolved what it was: not a lake dataset, so it was deleted.** Its effects
+already reach the lake as `patient_cdc` — contracted, encrypted, promoted, tokenised
+— and giving it a contract would have committed the platform to a second route into
+Bronze for data already there by a better one. Nothing is lost:
+`raw/healthcare/patient_change/` is still the source of truth for the replay, and the
+generator is deterministic, which CI proves on every push.
+
+The `platform.ingest_batch` row was kept and marked `withdrawn_at`, not deleted.
+Removing the files while the registry still said `ingested` would make it lie about
+what is on disk; removing the row would erase the fact that this arrived at all,
+which is the one question the landing zone exists to answer.
+
+**The rule that stops it recurring is one line:** the catalog decides what the lake
+ingests, not the shape of a directory tree. `available_datasets` now returns
+manifested *and* contracted datasets.
+
+That change also fixed a bug the previous one introduced, which is worth stating
+plainly. Making an uncontracted write fail closed is right when someone names a
+dataset and wrong during a sweep: `confidentia ingest file healthcare` would have
+aborted the whole tenant's ingest on `patient_change`, taking `rebuild_pipeline.sh`
+with it. **A guard that fails closed is only safe if every caller can survive the
+refusal, and this one could not.** Filtering at discovery keeps the sweep working
+while a targeted request for that dataset still fails loudly.
 
 **The detector changed too, and this is the part worth defending.**
 `boundary_violations()` returned a hard-coded finding. That was honest while the
@@ -558,15 +582,14 @@ Stated as findings, because most of them were found by this project's own checks
 1. **No confidential-computing hardware.** Every enclave number is MODELLED.
    Attestation is a mechanism, not a security boundary, under `sim`.
 
-2. **Unclassified data can still reach the lake, and is now over-protected rather
-   than protected correctly.** `healthcare/patient_change` (§5.5.1) is encrypted
-   under the tenant's PHI key because no contract classifies it. That is the safe
-   failure, not the right one: the data cannot be promoted, queried or evaluated
-   until someone writes a contract or deletes it, and nothing currently forces that
-   decision. Ingestion refuses to *create* new instances of this; the existing one
-   is a judgement call left open deliberately rather than resolved by a script.
+2. **Deleted data is unlinked, not shredded.** Both the re-encryption of the landing
+   zone and the withdrawal of `patient_change` (§5.5.1) freed blocks that stay on the
+   device until reused, and on a copy-on-write filesystem or an SSD doing wear
+   levelling they may survive far longer. On a lake holding real data the answer is
+   full-disk encryption, not trusting an unlink — and this project does not attempt
+   the disk-level operation it would take to claim otherwise.
    *(The landing-zone plaintext defect this entry used to describe was closed by
-   ADR 0022; see §5.5.1.)*
+   ADR 0022, and the unclassified dataset it exposed by ADR 0023; see §5.5.1.)*
 
 3. **Schema drift is undetected at Bronze** (§7.4), and type drift is undetectable
    there for almost every column because the Bronze contract declares them `string`.
@@ -659,7 +682,7 @@ bash scripts/ci_local.sh                # the 14 CI jobs, locally
 
 ## Appendix B — Where the design decisions live
 
-18 ADRs in `docs/adr/`. The ones that constrain everything else:
+19 ADRs in `docs/adr/`. The ones that constrain everything else:
 
 | ADR | Decision |
 |---|---|
@@ -669,5 +692,6 @@ bash scripts/ci_local.sh                # the 14 CI jobs, locally
 | 0016 | Serving-layer boundaries: reads Postgres, never the lake |
 | 0017 | Where the confidentiality boundary is drawn |
 | 0022 | Encrypting the landing zone, and why the detector reads the disk |
+| 0023 | Why `patient_change` was deleted rather than contracted |
 | 0020 | Supply chain: scan policy and what is accepted |
 | 0021 | Azure as the cloud target, and what stays simulated |

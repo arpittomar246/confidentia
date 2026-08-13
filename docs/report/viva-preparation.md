@@ -216,6 +216,44 @@ Rehearse these. An examiner who finds one you have not thought about will press 
 > general lesson is uncomfortable and I would rather say it than be asked: every
 > check I had built covered the path the data was *supposed* to take.
 
+### "So what is `patient_change`? Did you give it a contract?"
+
+> No — I deleted it, and ADR 0023 records why. It is a source-side mutation script:
+> `oltp_loader` replays it into Postgres so the CDC collector observes the resulting
+> WAL records. Its effects already reach the lake as `patient_cdc`, which *is*
+> contracted, encrypted, promoted and tokenised.
+>
+> A contract is a commitment — to a Bronze table, quality rules, a Silver
+> conformance path, evaluation ground truth. Writing one would have created a second
+> route into the lake for data already there by a better one, and then the two would
+> have to be kept consistent forever. Nothing is lost either way: the raw directory
+> is still the source of truth for the replay, and the generator is deterministic,
+> which CI proves on every push.
+>
+> The `ingest_batch` row was kept and marked withdrawn rather than deleted. Removing
+> the files while the registry still said `ingested` would make it lie about what is
+> on disk; removing the row would erase the fact that this ever arrived, which is the
+> one question the landing zone exists to answer.
+
+### "Did closing these break anything?"
+
+**Say yes. It did, and admitting it is stronger than the alternative.**
+
+> Yes, and I caught it before it ran. Making an uncontracted write fail closed is
+> right when someone names a dataset and wrong during a sweep — `confidentia ingest
+> file healthcare` would have aborted the whole tenant's ingest on `patient_change`
+> and taken `rebuild_pipeline.sh` with it.
+>
+> The rule I ended on is: **a guard that fails closed is only safe if every caller
+> can survive the refusal.** That one could not. So discovery now asks the catalog
+> instead of the directory tree, which keeps the sweep working while a targeted
+> request for that dataset still fails loudly.
+>
+> CI also caught two of my own mistakes on the way in — a job missing pip extras
+> because pytest collects before it filters by marker, and a build script that
+> hard-coded a virtualenv path and so was silently local-only. Both are in the
+> commit history rather than tidied away.
+
 ### "Your violation detector now reports nothing. How do I know it still works?"
 
 > Because it no longer returns a conclusion — it scans the landing zone for the
@@ -316,15 +354,14 @@ Rehearse these. An examiner who finds one you have not thought about will press 
 
 ### "If you had another month?"
 
-> Three things, in order. **Deploy to Azure once** — roughly a day's work, mostly
-> the KMS client, and it would replace the single largest caveat in the
-> dissertation with a measurement. **Build incremental Silver and Gold**, which
-> unblocks E3 and is the largest missing piece of pipeline. **Decide what
->  is** — right now it is encrypted under the PHI key because
-> nothing classifies it, which is the safe failure rather than the right one.
+> Two things, in order. **Deploy to Azure once** — roughly a day's work, mostly the
+> KMS client, and it would replace the single largest caveat in the dissertation
+> with a measurement. **Build incremental Silver and Gold**, which unblocks E3 and
+> is the largest missing piece of pipeline.
 >
-> The landing-zone hole was first on this list a week ago and is now closed
-> (ADR 0022). I would rather show you that than describe it.
+> There was a third until this week. The landing-zone hole is closed (ADR 0022) and
+> the unclassified dataset it exposed is resolved (ADR 0023). I would rather show
+> you those than describe them.
 
 ---
 

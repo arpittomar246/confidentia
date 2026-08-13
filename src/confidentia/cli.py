@@ -383,6 +383,81 @@ def landing_verify() -> None:
     typer.echo(f"expected magic {PARQUET_ENCRYPTED_MAGIC!r} on every file; landing is clean")
 
 
+@landing_app.command("withdraw")
+def landing_withdraw(
+    tenant: Annotated[str, typer.Argument(help="healthcare | financial")],
+    dataset: Annotated[str, typer.Argument(help="The uncontracted dataset to remove.")],
+    reason: Annotated[str, typer.Option(help="Why this is not a lake dataset.")] = "",
+    withdrawn_by: Annotated[str, typer.Option(help="Who decided.")] = "developer",
+    yes: Annotated[bool, typer.Option("--yes", help="Actually delete it.")] = False,
+) -> None:
+    """Remove landing data that should never have been landed (ADR 0023).
+
+    Only works on a dataset **no schema contract declares**. A contracted dataset is
+    something the platform depends on; removing it means re-ingesting or losing
+    replay, and one command should not be able to do both jobs.
+
+    The ``platform.ingest_batch`` row is kept and marked, not deleted. Erasing it
+    would erase the fact that this arrived at all, which is the one question the
+    landing zone exists to answer.
+    """
+    from confidentia.ingestion.withdraw import (
+        WithdrawalRefusedError,
+        plan_withdrawal,
+        withdraw,
+    )
+
+    try:
+        plan = plan_withdrawal(tenant, dataset)
+    except WithdrawalRefusedError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"{plan.tenant}/{plan.dataset}")
+    typer.echo(f"  {len(plan.parts)} file(s), {plan.rows:,} rows, {plan.bytes_ / 1024:,.0f} KiB")
+    typer.echo(f"  {plan.directory}")
+    for batch in plan.batches:
+        typer.echo(
+            f"  batch {batch['batch_digest'][:16]}  via {batch['source']}  "
+            f"first seen {batch['first_seen_at']:%Y-%m-%d}"
+        )
+
+    if not yes:
+        typer.echo("")
+        typer.echo("Dry run. Re-run with --yes to delete the files.")
+        typer.echo("The ingest_batch row is kept either way, marked withdrawn.")
+        return
+
+    if not reason:
+        typer.echo("")
+        typer.echo("--reason is required with --yes. A withdrawal with no recorded")
+        typer.echo("justification is indistinguishable from data loss.")
+        raise typer.Exit(code=1)
+
+    withdraw(plan, reason=reason, withdrawn_by=withdrawn_by)
+    typer.echo("")
+    typer.echo(f"withdrawn: {len(plan.parts)} file(s), {plan.rows:,} rows")
+    typer.echo(f"ledger marked for {len(plan.batches)} batch(es): {reason}")
+
+
+@landing_app.command("withdrawn")
+def landing_withdrawn() -> None:
+    """List every batch the ledger records as withdrawn."""
+    from confidentia.ingestion.withdraw import withdrawn_datasets
+
+    rows = withdrawn_datasets()
+    if not rows:
+        typer.echo("no withdrawn batches")
+        return
+    for row in rows:
+        typer.echo(f"{row['tenant']}/{row['dataset']}  {row['batch_digest'][:16]}")
+        typer.echo(
+            f"  {row['row_count']:,} rows  withdrawn {row['withdrawn_at'][:19]} "
+            f"by {row['withdrawn_by']}"
+        )
+        typer.echo(f"  {row['withdrawn_reason']}")
+
+
 def _report_orphans(orphans: list) -> None:
     """Name landing datasets no schema contract classifies.
 
