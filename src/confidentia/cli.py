@@ -1274,6 +1274,70 @@ def list_runs(
         )
 
 
+bench_app = typer.Typer(help="Experiments E1-E8.", no_args_is_help=True)
+app.add_typer(bench_app, name="bench")
+
+
+@bench_app.command("e4")
+def bench_e4(
+    rows: Annotated[int, typer.Option(help="Rows per arm.")] = 3_000_000,
+    repeats: Annotated[int, typer.Option(help="Timed repeats after warm-up.")] = 5,
+) -> None:
+    """E4 - what Parquet Modular Encryption costs.
+
+    Do not lower `--rows` much below a million. At 200,000 the write takes under a
+    second, Spark's fixed per-job overhead swamps the encryption cost, and the
+    result inverts to "encryption is faster" -- which is exactly the impossible
+    number the Stage 1 spike reported.
+    """
+    from confidentia.benchmarks import e4_encryption
+
+    e4_encryption.main(rows=rows, repeats=repeats)
+
+
+@bench_app.command("e2")
+def bench_e2(
+    rows: Annotated[int, typer.Option(help="Rows written per arm.")] = 3_000_000,
+    repeats: Annotated[int, typer.Option(help="Timed repeats after warm-up.")] = 3,
+) -> None:
+    """E2 - output partition count against write time, file size and the EPC budget."""
+    from confidentia.benchmarks import e2_partitioning
+
+    e2_partitioning.main(rows=rows, repeats=repeats)
+
+
+@bench_app.command("results")
+def bench_results(
+    experiment: Annotated[str | None, typer.Argument(help="E2, E4, ... or omit for all.")] = None,
+) -> None:
+    """Recorded results, newest per experiment/arm/metric."""
+    from confidentia.store import db as store_db
+
+    where, params = ("WHERE experiment = %s", (experiment.upper(),)) if experiment else ("", ())
+    rows = store_db.fetch_all(
+        f"""
+        SELECT experiment, arm, metric, value, unit, label, repeats, p50, p90,
+               rows_processed, measured_at
+          FROM platform.benchmark_latest {where}
+         ORDER BY experiment, arm
+        """,
+        params,
+    )
+    if not rows:
+        typer.echo("no results recorded. Run `confidentia bench e2` or `e4` first.")
+        raise typer.Exit(code=1)
+
+    typer.echo(f"{'exp':4s} {'arm':12s} {'metric':16s} {'p50':>9s} {'p90':>9s} "
+               f"{'rows':>11s} {'label':9s} measured")
+    for row in rows:
+        typer.echo(
+            f"{row['experiment']:4s} {row['arm']:12s} {row['metric']:16s} "
+            f"{row['p50']:>8.2f}{row['unit']} {row['p90']:>8.2f}{row['unit']} "
+            f"{(row['rows_processed'] or 0):>11,} {row['label']:9s} "
+            f"{row['measured_at']:%Y-%m-%d %H:%M}"
+        )
+
+
 plan_app = typer.Typer(
     help="C5 - enclave placement planner: where the boundary goes, and what it costs.",
     no_args_is_help=True,

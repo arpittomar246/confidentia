@@ -1087,7 +1087,8 @@ All of these are real findings or accepted costs. **None is an artefact.**
 | 13 | Containers: four images built and verified; 5 defects only building found | `07a9938` |
 | 12 | Observability: 8 platform gauges from pipeline tables, 8 alerts, Grafana as code | `52c3491` |
 | 14 | Supply chain: scanning with a policy, SBOMs, Sigstore provenance | `f541117` |
-| 15–16 | Azure IaC + the cloud architecture: validated, Checkov clean, never applied | *this session* |
+| 15–16 | Azure IaC + the cloud architecture: validated, Checkov clean, never applied | `ee3239d` |
+| E2/E4 | Experiments measured; E3 blocked, E5–E7 never defined (docs/experiments.md) | *this session* |
 
 ### Pending
 
@@ -1097,8 +1098,10 @@ All of these are real findings or accepted costs. **None is an artefact.**
 | — | Final report, PPT, demo script, viva Q&A | 2 |
 
 **Total remaining: ~2–4 sessions. All sixteen stages and all five contributions
-are delivered.** What is left is not build work: experiments E1–E8 with graphs,
-and the report, PPT, demo script and viva preparation.
+are delivered.** What is left: **E2 and E4 are measured**; E1 and E8 are designed and not run;
+**E3 is blocked** because incremental Silver/Gold does not exist; E5–E7 were
+never specified anywhere. Then the report, PPT, demo script and viva prep.
+See docs/experiments.md.
 
 ---
 
