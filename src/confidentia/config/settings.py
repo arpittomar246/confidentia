@@ -386,6 +386,22 @@ class ApiSettings(BaseSettings):
     # route and duration.
     slow_query_ms: int = 1000
 
+    # --- observability (stage 12) ---
+    metrics_enabled: bool = True
+    # `/metrics` carries per-dataset quality scores and per-tenant counts, which is
+    # the same class of data `/gate/blocked` guards behind the viewer role. So it is
+    # authenticated by default and Prometheus must present a token.
+    #
+    # The compose stack sets this true, because there the metrics endpoint is a
+    # single-host demo. In a real deployment metrics belong on a port that is not
+    # published rather than on a public one with auth turned off.
+    metrics_public: bool = False
+    # Platform metrics are read from PostgreSQL, so an uncached /metrics would run
+    # eight aggregate queries per scrape, per Prometheus replica. The values move
+    # when a pipeline run finishes -- minutes apart -- so a scrape interval of
+    # cached data loses nothing.
+    metrics_cache_seconds: int = 30
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(

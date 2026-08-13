@@ -1,0 +1,125 @@
+# Alert rules.
+#
+# The test applied to every rule below: **would a person do something about it at
+# 03:00?** A rule that fires on a number nobody acts on trains people to ignore the
+# channel, and then the one that mattered is ignored too. So there is no alert on
+# CPU, none on memory, and none on request rate -- only on states that mean the
+# platform has stopped protecting or stopped producing.
+#
+# `for:` durations are deliberately long. Every one of these conditions is either
+# durable (a blocked dataset stays blocked until someone acts) or already smoothed
+# by a 30s scrape, so a short window would only add flapping.
+
+groups:
+  - name: confidentia-platform
+    rules:
+      # The metadata store is the platform's memory. Without it the API returns 503,
+      # the gate cannot record a decision, and no run can be tracked.
+      - alert: MetadataStoreUnreachable
+        expr: absent(confidentia_lineage_entries) or up{job="confidentia-api"} == 0
+        for: 3m
+        labels: {severity: critical}
+        annotations:
+          summary: "The API is down or cannot reach PostgreSQL"
+          description: >-
+            Platform gauges have stopped being reported. The API deliberately
+            keeps serving HTTP metrics when the database is unreachable, so this
+            firing while `confidentia_http_requests_total` still moves means the
+            store is the problem, not the process.
+
+      # Promotion blocked is the gate working, so this is not critical -- but a
+      # dataset blocked for an hour is one nobody is looking at, and Gold is
+      # silently going stale behind it.
+      - alert: PromotionBlockedTooLong
+        expr: confidentia_promotion_blocked == 1
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.tenant }}/{{ $labels.dataset }} has been blocked for an hour"
+          description: >-
+            The quality gate is refusing to promote this dataset to Gold. That is
+            the gate doing its job; the alert is that nobody has acted on it.
+            `confidentia quality failures --dataset {{ $labels.dataset }}` says why.
+
+      # A refused key release is the attestation mechanism working. A *burst* of
+      # them means code was deployed without `keys approve`, or something is
+      # presenting evidence that does not verify.
+      - alert: KeyReleaseRefusalBurst
+        expr: increase(confidentia_key_release_total{granted="false"}[15m]) > 5
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "Key release is being refused repeatedly for {{ $labels.tenant }}"
+          description: >-
+            The broker has refused more than five requests in fifteen minutes. The
+            usual cause is a measured package edited without re-running
+            `confidentia keys approve`; the pipeline will be failing closed, which
+            is correct and also means nothing is being processed.
+
+      # Freshness is the one that catches a pipeline that has silently stopped:
+      # every other metric looks healthy when no runs are happening at all.
+      - alert: FreshnessSLABreached
+        expr: confidentia_freshness_lag_minutes > 60
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.tenant }}/{{ $labels.dataset }} is stale"
+          description: >-
+            The newest event is more than an hour old. Either the source has
+            stopped producing or ingestion has stopped consuming, and the
+            difference is visible in `confidentia_runs_total`.
+
+      # Quality dropping is worth knowing before the gate blocks on it, which is
+      # why the threshold here sits above the gate's 0.95.
+      - alert: QualityScoreDegrading
+        expr: confidentia_dq_score < 0.97
+        for: 30m
+        labels: {severity: info}
+        annotations:
+          summary: "Quality on {{ $labels.tenant }}/{{ $labels.dataset }} is {{ $value | printf \"%.3f\" }}"
+          description: >-
+            Still above the promotion threshold of 0.95, so nothing is blocked yet.
+            This is the early warning, not the failure.
+
+      # Quarantine is recoverable data, not lost data -- but it stays recoverable
+      # only while someone replays it.
+      - alert: QuarantineBacklogGrowing
+        expr: sum by (tenant, dataset) (confidentia_quarantine_records) > 10000
+        for: 2h
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.tenant }}/{{ $labels.dataset }} has a large unreplayed quarantine"
+          description: >-
+            Rows that failed a critical rule are held rather than dropped. Nothing
+            is lost, but nothing has been replayed either.
+
+  - name: confidentia-api
+    rules:
+      # 5xx only. A 401 or 403 is the API refusing correctly and is counted
+      # separately by `confidentia_auth_failures_total`; alerting on 4xx would
+      # page someone every time a viewer opened the audit module.
+      - alert: ApiErrorRate
+        expr: >-
+          sum(rate(confidentia_http_requests_total{status=~"5.."}[5m]))
+          / sum(rate(confidentia_http_requests_total[5m])) > 0.05
+        for: 10m
+        labels: {severity: critical}
+        annotations:
+          summary: "More than 5% of API requests are failing"
+          description: >-
+            Server-side failures only. The request id in each response body finds
+            the log line.
+
+      - alert: ApiLatencyHigh
+        expr: >-
+          histogram_quantile(
+            0.95,
+            sum by (le, route) (rate(confidentia_http_request_duration_seconds_bucket[5m]))
+          ) > 2
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "p95 latency on {{ $labels.route }} is above 2s"
+          description: >-
+            Measured p95s at Stage 10 were between 3 ms and 22 ms, so this is two
+            orders of magnitude out rather than a tight threshold.

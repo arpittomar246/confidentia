@@ -17,13 +17,6 @@
 #
 #   POSTGRES_PORT=15432 API_PUBLISHED_PORT=18000 docker compose --profile core up -d
 #
-# Every published host port is overridable, because the development machine runs
-# Postgres, the API and Vite natively on the same numbers -- `up` against the
-# defaults fails with "address already in use" on 5432 before anything starts.
-# Container-side ports never move, so service-to-service traffic is unaffected.
-#
-#   POSTGRES_PORT=15432 API_PUBLISHED_PORT=18000 docker compose --profile core up -d
-#
 #   docker compose --profile core   up -d     # Postgres + MinIO + API + UI
 #   docker compose --profile batch  up -d     # + Spark + Airflow
 #   docker compose --profile stream up -d     # + Kafka
@@ -120,6 +113,13 @@ services:
       # unauthenticated-by-accident service to their network.
       API_HOST: 0.0.0.0
       API_PORT: "8000"
+      # `/metrics` requires the viewer role by default -- it carries per-dataset
+      # scores and per-tenant counts. Public here because this stack is a
+      # single-host demo and Prometheus scrapes it over the internal network. A
+      # real deployment leaves it authenticated and gives Prometheus a token file
+      # (see monitoring/prometheus/prometheus.yml), or puts it on a port that is
+      # not published at all.
+      API_METRICS_PUBLIC: "true"
     command: ["confidentia", "api", "serve"]
     volumes:
       - lakedata:/data
@@ -239,10 +239,23 @@ services:
   prometheus:
     image: prom/prometheus:latest
     profiles: [demo]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # Six hours. This is a demo stack whose Prometheus is thrown away with the
+      # volume; retaining fifteen days would only grow a volume nobody reads.
+      - --storage.tsdb.retention.time=6h
+      - --web.enable-lifecycle
     volumes:
       - ./monitoring/prometheus:/etc/prometheus:ro
       - promdata:/prometheus
     ports: ["${PROMETHEUS_PORT:-9090}:9090"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    depends_on: [api]
     deploy:
       resources:
         limits: {memory: 384M}
@@ -254,10 +267,21 @@ services:
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
       GF_USERS_ALLOW_SIGN_UP: "false"
+      # Anonymous read access. The dashboards show operational aggregates and this
+      # is a demo stack; the alternative is a login screen between a viva audience
+      # and the panels. Editing still requires the admin password.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/confidentia-platform.json
     volumes:
       - ./monitoring/grafana:/etc/grafana/provisioning:ro
       - grafanadata:/var/lib/grafana
     ports: ["${GRAFANA_PORT:-3000}:3000"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
     depends_on: [prometheus]
     deploy:
       resources:

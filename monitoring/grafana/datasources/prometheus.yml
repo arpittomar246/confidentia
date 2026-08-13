@@ -1,0 +1,21 @@
+# Grafana datasource, provisioned as code.
+#
+# Mounted read-only at /etc/grafana/provisioning/datasources, so this file *is* the
+# configuration -- a datasource added through the UI would live only in the
+# container's volume and disappear the first time someone ran `down -v`.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: confidentia-prometheus
+    type: prometheus
+    access: proxy
+    # The compose service name. Grafana resolves it on the shared network, which is
+    # why this is not localhost and why publishing Prometheus is optional.
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # Must match `scrape_interval` in prometheus.yml, or Grafana's `$__rate_interval`
+      # picks a window shorter than the scrape and every rate() renders as gaps.
+      timeInterval: 30s

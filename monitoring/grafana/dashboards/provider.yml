@@ -1,0 +1,18 @@
+# Where Grafana finds the dashboards, provisioned as code for the same reason as
+# the datasource: a dashboard built in the UI lives in a volume and is lost on the
+# first `down -v`, and cannot be reviewed in a diff.
+apiVersion: 1
+
+providers:
+  - name: confidentia
+    orgId: 1
+    folder: CONFIDENTIA
+    type: file
+    # Editable in the UI so a panel can be tried out, but the file wins on every
+    # restart -- which is the intended message: change the JSON, not the browser.
+    allowUiUpdates: true
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

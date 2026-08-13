@@ -32,6 +32,7 @@ from confidentia.api.routers import (
     ingestion,
     lineage,
     marts,
+    observability,
     quality,
     runs,
 )
@@ -91,6 +92,12 @@ def create_app(settings: Settings | None = None, *, verifier: TokenVerifier | No
     for module in (health, runs, quality, evaluation, gate, ingestion, lineage, marts, audit):
         app.include_router(module.router)
 
+    if settings.api.metrics_enabled:
+        from confidentia.api.metrics import Metrics
+
+        app.state.metrics = Metrics(settings)
+        app.include_router(observability.router)
+
     # Credentials are not allowed: this API authenticates with a bearer token in a
     # header, never a cookie, so `allow_credentials=True` would widen what a
     # browser will send cross-origin for no benefit here.
@@ -112,16 +119,28 @@ def create_app(settings: Settings | None = None, *, verifier: TokenVerifier | No
         request.state.request_id = request_id
         started = time.perf_counter()
         response = await call_next(request)
-        duration_ms = round((time.perf_counter() - started) * 1000, 1)
+        elapsed = time.perf_counter() - started
         response.headers["x-request-id"] = request_id
         logger.info(
             "request",
             method=request.method,
             path=request.url.path,
             status=response.status_code,
-            duration_ms=duration_ms,
+            duration_ms=round(elapsed * 1000, 1),
             request_id=request_id,
         )
+        metrics = getattr(app.state, "metrics", None)
+        if metrics is not None:
+            # The route template, resolved after routing. Labelling by
+            # `request.url.path` would create one time series per UUID requested.
+            from confidentia.api.metrics import route_template
+
+            metrics.observe(
+                method=request.method,
+                route=route_template(request),
+                status=response.status_code,
+                duration_s=elapsed,
+            )
         return response
 
     return app

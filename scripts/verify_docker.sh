@@ -68,10 +68,10 @@ echo "referenced bind mounts"
 # Paths whose owning stage has not run yet are reported as `pending` and do not
 # fail: they are known gaps with a name attached, not surprises. Anything else
 # missing is a failure.
-declare -A PENDING=(
-    ["./monitoring/prometheus"]="stage 12 (observability)"
-    ["./monitoring/grafana"]="stage 12 (observability)"
-)
+# Empty now that Stage 12 has written the monitoring configuration. Kept rather
+# than deleted: the next service added ahead of its configuration should be
+# declared here with the stage that owns it, not silently allowed to fail.
+declare -A PENDING=()
 
 while read -r path; do
     [[ -z "$path" ]] && continue
@@ -143,7 +143,7 @@ if [[ "$UP" == "1" ]]; then
     echo "  (published on ${API_PUBLISHED_PORT}/${FRONTEND_PORT} to avoid the native services)"
 
     # shellcheck disable=SC2064
-    trap "docker compose --profile core down -v >/dev/null 2>&1" EXIT
+    trap "docker compose --profile demo down -v >/dev/null 2>&1" EXIT
 
     if ! docker compose --profile core up -d >/tmp/confidentia-up.log 2>&1; then
         bad "compose up"
@@ -188,6 +188,73 @@ if [[ "$UP" == "1" ]]; then
                 bad "database $db missing"
             fi
         done
+    fi
+
+    # ----------------------------------------------------- the monitoring slice
+    #
+    # Prometheus and Grafana, brought up alongside core rather than as the whole
+    # `demo` profile: demo also starts Spark, Airflow and Kafka, which is 6 GB of
+    # containers on a 3.9 GB VM. What is being verified here is that the scrape
+    # path works and that provisioning took -- neither needs a scheduler.
+    echo
+    echo "monitoring"
+    export PROMETHEUS_PORT=19090 GRAFANA_PORT=13000
+    prom="http://localhost:${PROMETHEUS_PORT}"
+    graf="http://localhost:${GRAFANA_PORT}"
+
+    if ! docker compose up -d prometheus grafana >>/tmp/confidentia-up.log 2>&1; then
+        bad "prometheus/grafana up"
+    else
+        for _ in $(seq 1 40); do
+            curl -sf -o /dev/null "${prom}/-/healthy" && break
+            sleep 3
+        done
+
+        [[ "$(status "${prom}/-/healthy")" == "200" ]] \
+            && ok "prometheus healthy" || bad "prometheus healthy"
+
+        rules=$(curl -sf "${prom}/api/v1/rules" | grep -o '"name"' | wc -l)
+        [[ "$rules" -gt 8 ]] \
+            && ok "alert rules loaded ($((rules - 2)) rules)" \
+            || bad "alert rules did not load"
+
+        # The scrape has to succeed, not merely be configured. A target in `down`
+        # is the state this whole stage exists to make visible, so it is the check.
+        for _ in $(seq 1 20); do
+            curl -sf "${prom}/api/v1/targets" | grep -q '"health":"up".*confidentia-api\|confidentia-api.*"health":"up"' && break
+            sleep 3
+        done
+        if curl -sf "${prom}/api/v1/targets" | python3 -c "
+import json, sys
+targets = json.load(sys.stdin)['data']['activeTargets']
+api = [t for t in targets if t['labels'].get('job') == 'confidentia-api']
+sys.exit(0 if api and api[0]['health'] == 'up' else 1)
+" 2>/dev/null; then
+            ok "prometheus is scraping the API"
+        else
+            bad "prometheus is not scraping the API"
+            curl -sf "${prom}/api/v1/targets" | head -c 400
+        fi
+
+        # The metric has to arrive in the time series database, not just be served.
+        if curl -sf --get "${prom}/api/v1/query" \
+             --data-urlencode 'query=sum(confidentia_http_requests_total)' \
+             | grep -q '"value"'; then
+            ok "platform metrics queryable through prometheus"
+        else
+            bad "platform metrics not queryable through prometheus"
+        fi
+
+        [[ "$(status "${graf}/api/health")" == "200" ]] \
+            && ok "grafana healthy" || bad "grafana healthy"
+
+        curl -sf -u admin:"${GRAFANA_PASSWORD:-admin}" "${graf}/api/datasources" \
+            | grep -q 'confidentia-prometheus' \
+            && ok "grafana datasource provisioned" || bad "grafana datasource provisioned"
+
+        curl -sf -u admin:"${GRAFANA_PASSWORD:-admin}" "${graf}/api/search?query=CONFIDENTIA" \
+            | grep -q 'confidentia-platform' \
+            && ok "grafana dashboard provisioned" || bad "grafana dashboard provisioned"
     fi
 fi
 

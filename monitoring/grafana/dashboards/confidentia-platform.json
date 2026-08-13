@@ -1,0 +1,333 @@
+{
+  "uid": "confidentia-platform",
+  "title": "CONFIDENTIA — platform",
+  "description": "Pipeline state read from the tables the pipeline writes. Every panel maps to a gauge in confidentia.api.metrics, which maps to one SQL query; no number here is derived in Grafana.",
+  "tags": ["confidentia"],
+  "timezone": "utc",
+  "editable": true,
+  "schemaVersion": 39,
+  "refresh": "1m",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "tenant",
+        "label": "Tenant",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "confidentia-prometheus" },
+        "query": "label_values(confidentia_dq_score, tenant)",
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Is the platform protecting and producing?",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Datasets blocked by the gate",
+      "description": "Blocked is the gate working. A number that stays non-zero for an hour is nobody acting on it — see the PromotionBlockedTooLong alert.",
+      "datasource": { "type": "prometheus", "uid": "confidentia-prometheus" },
+      "gridPos": { "h": 5, "w": 5, "x": 0, "y": 1 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(confidentia_promotion_blocked{tenant=~\"$tenant\"})",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "auto" }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Key releases refused",
+      "description": "A refusal is the attestation mechanism working, not a fault. A rising count means code was changed without `confidentia keys approve`.",
+      "datasource": { "type": "prometheus", "uid": "confidentia-prometheus" },
+      "gridPos": { "h": 5, "w": 5, "x": 5, "y": 1 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(confidentia_key_release_total{granted=\"false\", tenant=~\"$tenant\"})",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "blue", "value": null }]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "auto" }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Provenance chain length",
+      "description": "Entries in the signed, Merkle-chained lineage (C3). Monotonic: a fall means entries were deleted, which the chain verifier would also report as a broken link.",
+      "datasource": { "type": "prometheus", "uid": "confidentia-prometheus" },
+      "gridPos": { "h": 5, "w": 5, "x": 10, "y": 1 },
+      "targets": [{ "refId": "A", "expr": "confidentia_lineage_entries", "instant": true }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "purple", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "area", "textMode": "auto" }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Unreplayed quarantine",
+      "description": "Rows held rather than dropped. Recoverable data — but only while someone replays it.",
+      "datasource": { "type": "prometheus", "uid": "confidentia-prometheus" },
+      "gridPos": { "h": 5, "w": 9, "x": 15, "y": 1 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(confidentia_quarantine_records{tenant=~\"$tenant\"})",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 10000 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "area", "textMode": "auto" }
+    },
+    {
+      "type": "row",
+      "title": "Data quality",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Overall quality score, with the promotion threshold",
+      "description": "The dashed line at 0.95 is the gate threshold. A score means nothing without it, which is why it is drawn rather than described.",
+      "datasource": { "type": "prometheus", "uid": "confidentia-prometheus" },
+      "gridPos": { "h": 9, "w": 14, "x": 0, "y": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "confidentia_dq_score{tenant=~\"$tenant\"}",
+          "legendFormat": "{{tenant}}/{{dataset}} @{{layer}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0.8,
+          "max": 1,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 0.95 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "min"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 6,
+      "type": "bargauge",
+      "title": "Rule quality (F1 vs the answer key)",
+      "description": "Micro-averaged, EXCLUDING the Bronze duplicate_record family. At Bronze a duplicate and a legitimate redelivery are the same bytes, so including it measures the layer's blindness rather than the rules — 0.251 instead of 0.891 on financial/transaction.",
+      "datasource": { "type": "prometheus", "uid": "confidentia-prometheus" },
+      "gridPos": { "h": 9, "w": 10, "x": 14, "y": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "confidentia_rule_f1{tenant=~\"$tenant\"}",
+          "legendFormat": "{{dataset}} @{{layer}}",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 0.7 },
+              { "color": "green", "value": 0.9 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "displayMode": "gradient", "orientation": "horizontal", "showUnfilled": true }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Freshness lag against the SLA",
+      "description": "The one metric that catches a pipeline which has silently stopped: everything else looks healthy when no runs are happening at all.",
+      "datasource": { "type": "prometheus", "uid": "confidentia-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "confidentia_freshness_lag_minutes{tenant=~\"$tenant\"}",
+          "legendFormat": "{{dataset}} @{{layer}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "m",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 60 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      }
+    },
+    {
+      "id": 8,
+      "type": "piechart",
+      "title": "Quarantine by reason",
+      "description": "Why rows were held. A reason dominating usually means an upstream contract changed rather than the data degrading.",
+      "datasource": { "type": "prometheus", "uid": "confidentia-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (reason_code) (confidentia_quarantine_records{tenant=~\"$tenant\"})",
+          "legendFormat": "{{reason_code}}",
+          "instant": true
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "values": ["value"] },
+        "pieType": "donut"
+      }
+    },
+    {
+      "type": "row",
+      "title": "The serving layer",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Request rate by status",
+      "datasource": { "type": "prometheus", "uid": "confidentia-prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 25 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (status) (rate(confidentia_http_requests_total[$__rate_interval]))",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 20, "stacking": { "mode": "normal" } }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "p95 latency by route",
+      "description": "Route templates, never raw paths — labelling by path would create one series per UUID requested.",
+      "datasource": { "type": "prometheus", "uid": "confidentia-prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 25 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(confidentia_http_request_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{route}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0 }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Refused requests",
+      "description": "Counted separately from HTTP status because it is a security signal, not a protocol outcome. A viewer opening the audit module produces a 403 and belongs here; it is not an error.",
+      "datasource": { "type": "prometheus", "uid": "confidentia-prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 25 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (reason) (rate(confidentia_auth_failures_total[$__rate_interval]))",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60 }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+    }
+  ]
+}

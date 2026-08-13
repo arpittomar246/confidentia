@@ -1,8 +1,9 @@
 # PROJECT_CONTEXT
 
 Handoff document for **CONFIDENTIA**. Written so development can continue without
-re-deriving anything. Current as of **Stage 13** (13 CI jobs green, 286 unit + 66 integration tests,
-**all five contributions delivered**, API and dashboard live, containers building).
+re-deriving anything. Current as of **Stage 12** (13 CI jobs green, 286 unit + 74 integration tests,
+**all five contributions delivered**, API and dashboard live, containers building,
+Prometheus and Grafana wired to the pipeline's own tables).
 
 ---
 
@@ -215,7 +216,7 @@ and are not meant to.
 ├── orchestration/dags/           6 DAGs + confidentia_common.py   Stages 8-9b
 ├── tests/  (conftest + 12 unit + 1 integration + 2 api)  333 tests
 ├── scripts/  (operational scripts, see §9)
-├── docs/adr/ (15 ADRs)  docs/stage-reports/ (16 reports)
+├── docs/adr/ (16 ADRs)  docs/stage-reports/ (17 reports)
 ├── frontend/                     Vite + React + TS, 9 modules (Stage 11)
 ├── docker/{backend,frontend,spark,airflow}/  four images, all built (Stage 13)
 ├── docs/api/openapi.json         Committed schema; CI fails if stale
@@ -224,7 +225,9 @@ and are not meant to.
 ├── docker-compose.yml            5 profiles; core verified up, all images build
 └── pyproject.toml
 
-EMPTY (not yet built): backend/ monitoring/ infrastructure/
+├── monitoring/{prometheus,grafana}/  scrape config, 8 alerts, dashboard as code
+
+EMPTY (not yet built): backend/ infrastructure/
                        src/confidentia/benchmarks/
                        orchestration/plugins/
                        src/confidentia/{benchmarks,tee}/
@@ -772,9 +775,9 @@ stages against four Dockerfiles that did not exist. It now runs
 dockerfile and bind mount is really there. `container-build` does the expensive
 half: builds all four images and brings the `core` profile up.
 
-The `demo` profile still cannot come up -- `monitoring/` is empty, which is
-Stage 12, and the script reports it as `pending` rather than letting Docker mount
-an empty directory.
+`verify_docker.sh` also brings up Prometheus and Grafana and asserts the scrape
+target is `up`, that a metric is queryable through Prometheus, and that Grafana's
+datasource and dashboard provisioned -- not merely that the containers started.
 
 `integration-tests` runs against a `postgres:18` service container and applies all
 migrations to an **empty** database first. That last part is the point: the tests
@@ -1076,18 +1079,18 @@ All of these are real findings or accepted costs. **None is an artefact.**
 | 10 | Serving layer: 36 read-only endpoints, JWT auth, 3-role ladder, OpenAPI | `ab52185` |
 | 11 | Dashboard: 9 modules, generated API types, 3 defects found by running it | `3733292` |
 | C5 | Placement planner: the boundary derived, costed and swept | `b91c3e0` |
-| 13 | Containers: four images built and verified; 5 defects only building found | *this session* |
+| 13 | Containers: four images built and verified; 5 defects only building found | `07a9938` |
+| 12 | Observability: 8 platform gauges from pipeline tables, 8 alerts, Grafana as code | *this session* |
 
 ### Pending
 
 | Stage | Deliverable | Est. sessions |
 |---|---|---|
-| 12 | Prometheus/Grafana/OTel | 1 |
 | 14–16 | CI/CD, Terraform + Azure architecture | 1 |
 | — | Experiments E1–E8 with graphs | 2 |
 | — | Final report, PPT, demo script, viva Q&A | 2 |
 
-**Total remaining: ~4–7 sessions.** All five contributions are delivered. What is
+**Total remaining: ~3–6 sessions.** All five contributions are delivered. What is
 left is packaging (12–13), experiments, and writing. The dashboard is done, so what remains is C5, packaging,
 experiments and writing.
 
