@@ -247,13 +247,30 @@ jobs:
           sys.exit(1 if bad else 0)
           PY
 
+  # `docker compose config` checks syntax and interpolation and NOTHING else. This
+  # job passed for eleven stages against a compose file referencing four Dockerfiles
+  # that did not exist, and would have kept passing. It now also asserts that every
+  # referenced dockerfile and bind mount is really there -- parsed out of the compose
+  # file, so adding a service cannot quietly escape the check. Seconds, no daemon.
   compose-validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Validate compose profiles
+      - run: bash scripts/verify_docker.sh --static
+
+  # The expensive half: the images must actually build, and the core profile must
+  # come up and answer. Minutes rather than seconds, which is why it is a separate
+  # job -- but a stack that has never been built is a stack that does not work, and
+  # this project found that out the slow way.
+  container-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      # These images total ~6 GB with layers. The preinstalled toolchains this
+      # project never uses are the cheapest thing to remove.
+      - name: Reclaim disk
         run: |
-          for profile in core batch stream bench demo; do
-            echo "--- $profile ---"
-            docker compose --profile "$profile" config --quiet
-          done
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h / | tail -1
+      - run: bash scripts/verify_docker.sh

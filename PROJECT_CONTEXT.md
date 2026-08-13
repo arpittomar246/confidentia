@@ -1,8 +1,8 @@
 # PROJECT_CONTEXT
 
 Handoff document for **CONFIDENTIA**. Written so development can continue without
-re-deriving anything. Current as of **C5** (12 CI jobs green, 286 unit + 66 integration tests,
-**all five contributions delivered**, API and dashboard live).
+re-deriving anything. Current as of **Stage 13** (13 CI jobs green, 286 unit + 66 integration tests,
+**all five contributions delivered**, API and dashboard live, containers building).
 
 ---
 
@@ -60,9 +60,15 @@ row carries `hardware_rooted = false`.
 | PostgreSQL | 18.4, `wal_level = logical` |
 | Host | Windows 11, **7.4 GB RAM**, WSL capped to 4 GB via `~/.wslconfig` |
 
-**No Docker.** Everything runs as native Linux processes in WSL. `docker-compose.yml`
-is maintained as the portable/cloud deliverable and validated in CI, but is not the
-development path (ADR 0001).
+**Docker Engine is installed** (29.7.2, in the distro, started with `sudo dockerd`
+because there is no systemd) but development still runs as native Linux processes.
+ADR 0001 rejected Docker *Desktop* and its VM; Engine is a daemon and costs nothing
+idle. Containers are the portable/cloud path and are now built and verified in CI
+(ADR 0018), not the development path.
+
+**Published container ports are overridable** -- the native Postgres, API and Vite
+own 5432/8000/5173, so `docker compose up` against the defaults fails to bind.
+`scripts/verify_docker.sh` publishes on 15432/18000/15173.
 
 ### Required environment variables
 
@@ -209,17 +215,16 @@ and are not meant to.
 ├── orchestration/dags/           6 DAGs + confidentia_common.py   Stages 8-9b
 ├── tests/  (conftest + 12 unit + 1 integration + 2 api)  333 tests
 ├── scripts/  (operational scripts, see §9)
-├── docs/adr/ (13 ADRs)  docs/stage-reports/ (15 reports)
+├── docs/adr/ (15 ADRs)  docs/stage-reports/ (16 reports)
 ├── frontend/                     Vite + React + TS, 9 modules (Stage 11)
-├── docker/frontend/              Dockerfile + nginx.conf (Stage 11)
+├── docker/{backend,frontend,spark,airflow}/  four images, all built (Stage 13)
 ├── docs/api/openapi.json         Committed schema; CI fails if stale
 ├── spikes/pme/                   Stage 1 feasibility spike (still runnable, used by CI)
-├── .github/workflows/ci.yml      12 jobs
-├── docker-compose.yml            5 profiles (syntax-validated only; Dockerfiles missing)
+├── .github/workflows/ci.yml      13 jobs
+├── docker-compose.yml            5 profiles; core verified up, all images build
 └── pyproject.toml
 
 EMPTY (not yet built): backend/ monitoring/ infrastructure/
-                       docker/{backend,spark,airflow}/
                        src/confidentia/benchmarks/
                        orchestration/plugins/
                        src/confidentia/{benchmarks,tee}/
@@ -754,17 +759,22 @@ For the UI: `airflow scheduler` and `airflow webserver --port 8080` in separate
 shells, **both with the passphrase in their environment** — `BashOperator`
 inherits it, and the platform has no fallback for it anywhere.
 
-### CI — 12 jobs, all green
+### CI — 13 jobs, all green
 
 `lint` (ruff + mypy) · `unit-tests` · **`integration-tests`** ·
 `ground-truth-isolation` · `plan-rule-coverage` · `dag-cli-contract` ·
 `declared-dependencies` · **`openapi-schema`** · **`frontend`** · `encryption-guarantee` ·
-`generator-determinism` · `compose-validate`
+`generator-determinism` · `compose-validate` · **`container-build`**
 
-`compose-validate` asserts less than its name suggests: `docker compose config`
-checks syntax and interpolation only, so it passes even though
-`docker/{backend,spark,airflow}/Dockerfile` do not exist (frontend's does, as of
-Stage 11). Those are Stage 13; until then no compose profile can be built.
+`compose-validate` used to assert only that the YAML parsed, and passed for eleven
+stages against four Dockerfiles that did not exist. It now runs
+`scripts/verify_docker.sh --static`, which also checks that every referenced
+dockerfile and bind mount is really there. `container-build` does the expensive
+half: builds all four images and brings the `core` profile up.
+
+The `demo` profile still cannot come up -- `monitoring/` is empty, which is
+Stage 12, and the script reports it as `pending` rather than letting Docker mount
+an empty directory.
 
 `integration-tests` runs against a `postgres:18` service container and applies all
 migrations to an **empty** database first. That last part is the point: the tests
@@ -1065,18 +1075,19 @@ All of these are real findings or accepted costs. **None is an artefact.**
 | 9b | **C3** — signed, Merkle-chained provenance; 4 tamper claims verified | `a7b48b1` |
 | 10 | Serving layer: 36 read-only endpoints, JWT auth, 3-role ladder, OpenAPI | `ab52185` |
 | 11 | Dashboard: 9 modules, generated API types, 3 defects found by running it | `3733292` |
-| C5 | Placement planner: the boundary derived, costed and swept | *this session* |
+| C5 | Placement planner: the boundary derived, costed and swept | `b91c3e0` |
+| 13 | Containers: four images built and verified; 5 defects only building found | *this session* |
 
 ### Pending
 
 | Stage | Deliverable | Est. sessions |
 |---|---|---|
 | 12 | Prometheus/Grafana/OTel | 1 |
-| 13–16 | Docker, CI/CD, Terraform + Azure architecture | 1–2 |
+| 14–16 | CI/CD, Terraform + Azure architecture | 1 |
 | — | Experiments E1–E8 with graphs | 2 |
 | — | Final report, PPT, demo script, viva Q&A | 2 |
 
-**Total remaining: ~5–8 sessions.** All five contributions are delivered. What is
+**Total remaining: ~4–7 sessions.** All five contributions are delivered. What is
 left is packaging (12–13), experiments, and writing. The dashboard is done, so what remains is C5, packaging,
 experiments and writing.
 

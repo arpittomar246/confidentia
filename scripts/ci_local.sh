@@ -71,7 +71,8 @@ if [[ ${#failed[@]} -eq 0 ]]; then
     echo "all local CI checks passed"
     echo "not run here, but CI does run them:"
     echo "  encryption-guarantee   scripts/verify_encryption.sh"
-    echo "  compose-validate       needs Docker"
+    echo "  compose-validate       scripts/verify_docker.sh --static"
+    echo "  container-build        scripts/verify_docker.sh   (needs a Docker daemon)"
     # These verify the project's headline claims and run nowhere automatically:
     # each needs a populated lake and the keystore, which neither this script nor
     # CI has. Naming them is the point -- a footer listing only the CI-covered

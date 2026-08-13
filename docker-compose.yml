@@ -10,6 +10,20 @@
 # host to death, and so that the memory budget is a reviewable part of the repo
 # rather than folklore.
 #
+# Every published host port is overridable, because the development machine runs
+# Postgres, the API and Vite natively on the same numbers -- `up` against the
+# defaults fails with "address already in use" on 5432 before anything starts.
+# Container-side ports never move, so service-to-service traffic is unaffected.
+#
+#   POSTGRES_PORT=15432 API_PUBLISHED_PORT=18000 docker compose --profile core up -d
+#
+# Every published host port is overridable, because the development machine runs
+# Postgres, the API and Vite natively on the same numbers -- `up` against the
+# defaults fails with "address already in use" on 5432 before anything starts.
+# Container-side ports never move, so service-to-service traffic is unaffected.
+#
+#   POSTGRES_PORT=15432 API_PUBLISHED_PORT=18000 docker compose --profile core up -d
+#
 #   docker compose --profile core   up -d     # Postgres + MinIO + API + UI
 #   docker compose --profile batch  up -d     # + Spark + Airflow
 #   docker compose --profile stream up -d     # + Kafka
@@ -40,7 +54,10 @@ networks:
 services:
   # ------------------------------------------------------------------ core
   postgres:
-    image: postgres:16-alpine
+    # 18 to match the development host (18.4) and the CI service container. The
+    # migrations are not version-sensitive today, but a stack that develops on 18
+    # and ships on 16 is one where the first difference is found in production.
+    image: postgres:18-alpine
     profiles: [core, batch, stream, bench, demo]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-confidentia}
@@ -54,9 +71,15 @@ services:
                -c max_wal_senders=4
                -c shared_buffers=128MB
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # `/var/lib/postgresql`, NOT `/var/lib/postgresql/data`. The postgres 18+
+      # images store data in a major-version-specific subdirectory so that
+      # `pg_upgrade --link` can work across a single mount point; mounting the old
+      # 16-era path makes the container refuse to start with "there appears to be
+      # PostgreSQL data in /var/lib/postgresql/data (unused mount/volume)".
+      # docker-library/postgres#1259.
+      - pgdata:/var/lib/postgresql
       - ./scripts/sql/init:/docker-entrypoint-initdb.d:ro
-    ports: ["5432:5432"]
+    ports: ["${POSTGRES_PORT:-5432}:5432"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-confidentia}"]
       interval: 10s
@@ -76,7 +99,7 @@ services:
       MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_KEY:-minioadmin}
     volumes:
       - miniodata:/data
-    ports: ["9000:9000", "9001:9001"]
+    ports: ["${MINIO_PORT:-9000}:9000", "${MINIO_CONSOLE_PORT:-9001}:9001"]
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 15s
@@ -87,10 +110,6 @@ services:
         limits: {memory: 384M}
     networks: [confidentia]
 
-  # NOTE: docker/backend/Dockerfile does not exist yet -- it is Stage 13. `docker
-  # compose config` validates syntax and interpolation only, so the compose-validate
-  # CI job passes without it; this service cannot be built until that stage lands.
-  # Run the API with `confidentia api serve` in the meantime.
   api:
     build: {context: ., dockerfile: docker/backend/Dockerfile}
     profiles: [core, batch, stream, demo]
@@ -104,7 +123,7 @@ services:
     command: ["confidentia", "api", "serve"]
     volumes:
       - lakedata:/data
-    ports: ["8000:8000"]
+    ports: ["${API_PUBLISHED_PORT:-8000}:8000"]
     healthcheck:
       # /health, not /ready: readiness depends on Postgres, and a container that
       # restarts because its database is slow to start never comes up at all.
@@ -128,7 +147,7 @@ services:
     # here would be silently ignored -- and it is not needed: nginx proxies /api to
     # the api service, which makes the console same-origin and removes CORS from
     # the containerised path entirely.
-    ports: ["5173:5173"]
+    ports: ["${FRONTEND_PORT:-5173}:5173"]
     depends_on: [api]
     deploy:
       resources:
@@ -146,7 +165,7 @@ services:
     volumes:
       - lakedata:/data
       - ./src:/opt/confidentia/src:ro
-    ports: ["4040:4040"]
+    ports: ["${SPARK_UI_PORT:-4040}:4040"]
     deploy:
       resources:
         limits: {memory: 2560M}
@@ -161,10 +180,29 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
         postgresql+psycopg2://${POSTGRES_USER:-confidentia}:${POSTGRES_PASSWORD:-confidentia}@postgres:5432/airflow
+      # The keystore passphrase reaches BashOperator tasks through the environment,
+      # and the platform has no fallback for it anywhere. Passed at run time, never
+      # baked into the image.
+      #
+      # `:-` rather than `:?` deliberately. A required-variable marker is
+      # interpolated *before* profiles are filtered, so it makes `docker compose
+      # --profile core config` fail on a variable the core profile does not use --
+      # which turns the validation job into a secrets check. The platform already
+      # refuses to open the keystore without it, with a clearer message than
+      # compose would give.
+      CONFIDENTIA_KEYSTORE_PASSPHRASE: ${CONFIDENTIA_KEYSTORE_PASSPHRASE:-}
     volumes:
       - ./orchestration/dags:/opt/airflow/dags:ro
       - lakedata:/data
-    ports: ["8080:8080"]
+    ports: ["${AIRFLOW_PORT:-8080}:8080"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      # Airflow migrates its metadata database on first start, which takes longer
+      # than any sane interval*retries would allow for.
+      start_period: 120s
     depends_on:
       postgres: {condition: service_healthy}
     deploy:
@@ -191,7 +229,7 @@ services:
       KAFKA_HEAP_OPTS: "-Xmx512m -Xms512m"
     volumes:
       - kafkadata:/var/lib/kafka/data
-    ports: ["9092:9092"]
+    ports: ["${KAFKA_PORT:-9092}:9092"]
     deploy:
       resources:
         limits: {memory: 768M}
@@ -204,7 +242,7 @@ services:
     volumes:
       - ./monitoring/prometheus:/etc/prometheus:ro
       - promdata:/prometheus
-    ports: ["9090:9090"]
+    ports: ["${PROMETHEUS_PORT:-9090}:9090"]
     deploy:
       resources:
         limits: {memory: 384M}
@@ -219,7 +257,7 @@ services:
     volumes:
       - ./monitoring/grafana:/etc/grafana/provisioning:ro
       - grafanadata:/var/lib/grafana
-    ports: ["3000:3000"]
+    ports: ["${GRAFANA_PORT:-3000}:3000"]
     depends_on: [prometheus]
     deploy:
       resources:

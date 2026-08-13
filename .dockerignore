@@ -1,0 +1,45 @@
+# The build context is the repository root, because two images need files from
+# outside their own directory: the frontend build reads docs/api/openapi.json, and
+# the Spark image compiles the KMS client from src/confidentia/crypto/java.
+#
+# That makes this file load-bearing rather than tidy-minded. Without it the context
+# sent to the daemon includes .venv, frontend/node_modules and the whole of .git --
+# together several gigabytes, uploaded on every build, to be discarded.
+
+.git
+.github
+
+# Virtualenvs and node modules: reinstalled inside the image from the lockfiles,
+# and platform-specific besides. A Linux image built with a host venv copied in
+# would work here and fail on any other machine.
+.venv
+venv
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+frontend/dist
+frontend/*.tsbuildinfo
+
+# Data and secrets. The lake never belongs in an image, and `.env` holds the
+# keystore passphrase -- which must arrive as a runtime secret, never a layer.
+.env
+*.env
+!.env.example
+data
+lake
+**/keystore
+**/*.key
+**/*.pem
+spike_keys.json
+
+# Build output that the image rebuilds for itself.
+src/confidentia/crypto/java/build
+src/confidentia/crypto/java/*.jar
+
+# Local scratch
+*.log
+.DS_Store
+gunicorn.ctl
