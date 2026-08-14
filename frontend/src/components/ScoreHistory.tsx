@@ -26,7 +26,18 @@ import {
 
 import type { Score } from "../api/rows";
 
-const SERIES_COLOURS = ["#4f8cff", "#34d399", "#fbbf24", "#f87171", "#a78bfa", "#22d3ee"];
+/**
+ * The categorical palette, not the status one.
+ *
+ * This list used to be `["#4f8cff", "#34d399", "#fbbf24", "#f87171", …]` — the
+ * accent followed by *good*, *warn* and *bad*. Those three are reserved: they mean
+ * a verified state, a state needing a human, and a refusal. Spending them on
+ * "dataset 2" put a red line and a green line on a chart whose neighbouring table
+ * used the same red and green to mean failed and passed, so the same colour meant
+ * two things on one screen. The gate threshold below is drawn in `bad` because
+ * there it *is* a status.
+ */
+const SERIES_COLOURS = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#9085e9"];
 
 export function ScoreHistory({ scores, threshold = 0.95 }: { scores: Score[]; threshold?: number }) {
   const datasets = [...new Set(scores.map((row) => row.dataset))].slice(0, SERIES_COLOURS.length);
@@ -61,7 +72,10 @@ export function ScoreHistory({ scores, threshold = 0.95 }: { scores: Score[]; th
     <div className="h-64 w-full">
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: -16 }}>
-          <CartesianGrid stroke="#232936" strokeDasharray="3 3" />
+          {/* Solid hairline, not dashed: a dashed grid competes with the data for
+              attention and the gate threshold is the only line here that earns a
+              dash, because it is the one thing that is not measured data. */}
+          <CartesianGrid stroke="#232936" />
           <XAxis
             dataKey="at"
             type="number"
@@ -108,8 +122,13 @@ export function ScoreHistory({ scores, threshold = 0.95 }: { scores: Score[]; th
               type="monotone"
               dataKey={dataset}
               stroke={SERIES_COLOURS[index % SERIES_COLOURS.length]}
-              strokeWidth={1.75}
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
               dot={false}
+              // r >= 4, with a 2px ring in the surface colour so the marker stays
+              // legible where two datasets cross.
+              activeDot={{ r: 4, strokeWidth: 2, stroke: "#0d0f14" }}
               // Gaps rather than interpolation: a dataset that was not scored in a
               // run has no score, and joining across the gap would draw a value
               // that was never measured.

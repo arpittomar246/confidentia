@@ -51,7 +51,7 @@ export function Layout() {
           <p className="mt-0.5 text-[11px] text-ink-500">Confidential lakehouse console</p>
         </div>
 
-        <nav className="flex-1 space-y-0.5 overflow-y-auto p-2">
+        <nav className="flex-1 space-y-0.5 overflow-y-auto p-2 pl-4">
           {NAV.map((entry) => {
             const allowed = may(entry.needs);
             return (
@@ -62,10 +62,14 @@ export function Layout() {
                 title={allowed ? entry.blurb : `Requires the ${entry.needs} role`}
                 className={({ isActive }) =>
                   [
-                    "block rounded px-3 py-2 text-sm transition",
+                    // The active marker is a rule against the panel edge, not just
+                    // a tinted background: at a glance the eye finds an edge faster
+                    // than it finds a slightly lighter rectangle.
+                    "relative block rounded px-3 py-2 text-sm transition-colors",
+                    "before:absolute before:inset-y-1.5 before:-left-2 before:w-0.5 before:rounded-full before:transition-colors",
                     isActive
-                      ? "bg-accent/10 font-medium text-accent"
-                      : "text-ink-300 hover:bg-ink-850 hover:text-ink-100",
+                      ? "bg-accent/10 font-medium text-accent before:bg-accent"
+                      : "text-ink-300 before:bg-transparent hover:bg-ink-850 hover:text-ink-100",
                     allowed ? "" : "opacity-45",
                   ].join(" ")
                 }

@@ -21,6 +21,7 @@ import { useState } from "react";
 
 import { useApi } from "../api/hooks";
 import type { Evaluation as EvaluationRow, EvaluationCaveat, EvaluationSummary } from "../api/rows";
+import { GroupedColumns, SERIES_CAP } from "../components/charts";
 import { Column, DataTable } from "../components/DataTable";
 import { Badge, Callout, Card, ErrorState, Grid, PageHeader, Select, Spinner, Stat } from "../components/ui";
 import { count, ratio, timestamp } from "../lib/format";
@@ -81,6 +82,38 @@ export function Evaluation() {
           </Callout>
         </div>
       ))}
+
+      <Card
+        title="Raw against corrected"
+        hint="F1 per dataset, both ways. The gap is the contaminated Bronze duplicate family, not a change in the rules."
+        className="mt-4"
+      >
+        {summary.isLoading ? (
+          <Spinner />
+        ) : summary.error ? (
+          <ErrorState error={summary.error} needs="viewer" />
+        ) : (
+          <div className="p-3">
+            {/* Both figures, side by side, because the page that shows only one of
+                them is the page that misleads. Where a dataset has no excluded
+                family the two bars are identical, which is itself the useful
+                signal: the correction applies to Bronze duplicates and nowhere
+                else. */}
+            <GroupedColumns
+              data={(summary.data?.items ?? []).slice(0, SERIES_CAP).map((row) => ({
+                label: `${row.dataset} · ${row.layer}`,
+                raw: row.f1 ?? 0,
+                corrected: row.f1_excl ?? 0,
+              }))}
+              series={[
+                { key: "raw", name: "F1 as measured" },
+                { key: "corrected", name: "F1 excluding duplicate_record" },
+              ]}
+              height={260}
+            />
+          </div>
+        )}
+      </Card>
 
       <Card title="Per dataset" hint="Micro-averaged by the API from the confusion-matrix counts" className="mt-4">
         {summary.isLoading ? (

@@ -84,9 +84,13 @@ export function Stat({
   tone?: Tone;
 }) {
   return (
-    <div className="rounded-lg border border-ink-700 bg-ink-900 px-4 py-3">
+    // The left rule is the only place a tone shows as a block of colour rather
+    // than as text. A tile whose whole surface tinted on a bad value would make a
+    // dashboard of four ordinary numbers look like an incident.
+    <div className="relative overflow-hidden rounded-lg border border-ink-700 bg-ink-900 px-4 py-3 transition-colors hover:border-ink-600">
+      <span className={`absolute inset-y-0 left-0 w-0.5 ${TONE_RULE[tone]}`} aria-hidden />
       <p className="text-xs font-medium tracking-wide text-ink-400 uppercase">{label}</p>
-      <p className={`tnum mt-1.5 text-2xl font-semibold ${TONE_TEXT[tone]}`}>{value}</p>
+      <p className={`tnum mt-1.5 text-3xl font-semibold tracking-tight ${TONE_TEXT[tone]}`}>{value}</p>
       {detail ? <p className="mt-1 text-xs text-ink-400">{detail}</p> : null}
     </div>
   );
@@ -101,6 +105,15 @@ const TONE_TEXT: Record<Tone, string> = {
   bad: "text-bad",
   info: "text-accent",
   suppressed: "text-suppressed",
+};
+
+const TONE_RULE: Record<Tone, string> = {
+  neutral: "bg-ink-700",
+  good: "bg-good",
+  warn: "bg-warn",
+  bad: "bg-bad",
+  info: "bg-accent",
+  suppressed: "bg-suppressed",
 };
 
 const TONE_CHIP: Record<Tone, string> = {

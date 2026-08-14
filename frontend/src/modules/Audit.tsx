@@ -22,6 +22,7 @@ import type {
   KeyReleaseSummary,
   Restatement,
 } from "../api/rows";
+import { RankedBars, STATUS } from "../components/charts";
 import { DataTable, PageFooter } from "../components/DataTable";
 import { Badge, Callout, Card, ErrorState, Grid, Mono, PageHeader, Select, Spinner, Stat } from "../components/ui";
 import { count, digest, percent, timestamp } from "../lib/format";
@@ -50,6 +51,21 @@ export function Audit() {
     },
     { total: 0, refused: 0 },
   );
+
+  // Refusals summed per reason across tenants. The summary is per (tenant, granted,
+  // reason), so a reason that fired for both tenants appears twice; grouping is a
+  // sum of returned counts, not a recomputation of anything.
+  const refusalsByReason = Object.entries(
+    (summary.data?.items ?? [])
+      .filter((row) => !row.granted)
+      .reduce<Record<string, number>>((acc, row) => {
+        const reason = row.reason ?? "unrecorded";
+        acc[reason] = (acc[reason] ?? 0) + row.requests;
+        return acc;
+      }, {}),
+  )
+    .map(([label, value]) => ({ label, value }))
+    .sort((a, b) => b.value - a.value);
 
   return (
     <>
@@ -80,6 +96,36 @@ export function Audit() {
           falling back to plaintext.
         </Callout>
       </div>
+
+      <Card
+        title="Why the broker refused"
+        hint="Every refusal, by the reason recorded at the time"
+        className="mt-4"
+      >
+        {summary.isLoading ? (
+          <Spinner />
+        ) : summary.error ? (
+          <ErrorState error={summary.error} needs="auditor" />
+        ) : refusalsByReason.length === 0 ? (
+          <Callout tone="warn">
+            No refusal has been recorded. A gate that has never refused anything is
+            indistinguishable from no gate, so this panel being empty is not good news.
+          </Callout>
+        ) : (
+          <div className="p-3">
+            {/* The refusals are the point of C2, and a table sorts them by tenant
+                rather than by how often each path fired. Which reason dominates is
+                the operational question — an allowlist that only ever rejects
+                unknown measurements is behaving differently from one rejecting
+                stale evidence. */}
+            <RankedBars
+              data={refusalsByReason}
+              colour={STATUS.bad}
+              height={Math.max(140, refusalsByReason.length * 34)}
+            />
+          </div>
+        )}
+      </Card>
 
       <Card title="Requests by outcome" className="mt-4">
         {summary.isLoading ? (

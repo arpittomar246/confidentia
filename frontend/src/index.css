@@ -30,8 +30,61 @@
   --color-bad: #f87171;
   --color-suppressed: #a78bfa;
 
+  /* Categorical series colours, for charts only.
+   *
+   * Separate from the four above on purpose. `good`, `warn` and `bad` are
+   * *status* colours: they mean a verified state, a state needing a human, and a
+   * refusal. Spending them on "dataset 2" and "dataset 3" would mean a green line
+   * on a chart and a green badge in a table no longer say the same thing, and the
+   * reader has no way to know which sense is in play. The first version of
+   * ScoreHistory did exactly that.
+   *
+   * Stepped for a dark surface and checked rather than eyeballed: on #171b24 all
+   * six clear the lightness band, the chroma floor, 3:1 contrast, a worst adjacent
+   * CVD separation of 8.4 (protan) and a worst adjacent normal-vision separation
+   * of 19.3. Reordering them breaks that, because the check is on adjacent pairs.
+   * Six is the cap; a seventh dataset folds into "other" rather than inventing a
+   * hue. */
+  --color-series-1: #3987e5;
+  --color-series-2: #d95926;
+  --color-series-3: #199e70;
+  --color-series-4: #c98500;
+  --color-series-5: #d55181;
+  --color-series-6: #9085e9;
+
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", "Source Code Pro", monospace;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Motion is short, single-property and opt-out.
+ *
+ * An operational console redrawing itself on every poll is worse than a static
+ * one, so entrances animate and updates do not: a value that changes because the
+ * data changed should not also move. */
+@media (prefers-reduced-motion: no-preference) {
+  .rise {
+    animation: rise 0.4s var(--ease-out) both;
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Recharts draws its own focus outline on every wrapper; the tooltip and the
+ * crosshair already say what is hovered. */
+.recharts-wrapper:focus,
+.recharts-surface:focus {
+  outline: none;
 }
 
 html,
