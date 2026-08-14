@@ -17,6 +17,7 @@ import { useState } from "react";
 
 import { useApi } from "../api/hooks";
 import type { Envelope, MartListing, MartRow, MartSchema } from "../api/rows";
+import { ChartEmpty, StackedColumns, STATUS } from "../components/charts";
 import { DataTable, PageFooter } from "../components/DataTable";
 import { Badge, Callout, Card, ErrorState, PageHeader, Spinner, Suppressed } from "../components/ui";
 import { count, timestamp, titleCase } from "../lib/format";
@@ -26,6 +27,35 @@ const LIMIT = 50;
 export function Marts() {
   const [selected, setSelected] = useState<string | null>(null);
   const listing = useApi<MartListing>("/marts");
+
+  // Proportions, not counts.
+  //
+  // On absolute cells this chart was one usable bar and five hairlines:
+  // `transactions_daily` has 11,454 cells and `fraud_by_hour` has 120, so a shared
+  // axis rendered the small marts as a few pixels — and the case this chart exists
+  // to show, `diagnosis_prevalence` with 86 primary suppressions and *zero*
+  // complementary ones, was invisible.
+  //
+  // The question here is compositional — *what fraction of this mart did the
+  // control remove* — so the y-axis is the fraction and every mart is comparable.
+  // The absolute counts are in the table directly below, unchanged.
+  const suppression = (listing.data?.items ?? [])
+    .filter((row) => row.disclosure && row.disclosure.total_cells > 0)
+    .map((row) => {
+      const record = row.disclosure!;
+      const total = record.total_cells;
+      const published = Math.max(
+        0,
+        total - record.primary_suppressed - record.complementary_suppressed,
+      );
+      return {
+        label: row.mart.replace(/^mart_/, ""),
+        published: published / total,
+        primary: record.primary_suppressed / total,
+        complementary: record.complementary_suppressed / total,
+      };
+    })
+    .sort((a, b) => b.primary + b.complementary - (a.primary + a.complementary));
 
   return (
     <>
@@ -38,6 +68,40 @@ export function Marts() {
         Cells below the minimum count are blanked, and complementary suppression blanks more so the
         first cannot be recovered by subtraction. Do not reconstruct them from a total.
       </Callout>
+
+      <Card
+        title="What disclosure control removed"
+        hint="As a proportion of each mart's cells, so marts of very different sizes are comparable. Absolute counts are in the table below."
+        className="mt-4"
+      >
+        {listing.isLoading ? (
+          <Spinner />
+        ) : listing.error ? (
+          <ErrorState error={listing.error} needs="viewer" />
+        ) : suppression.length === 0 ? (
+          <ChartEmpty>No mart has been published with a disclosure record.</ChartEmpty>
+        ) : (
+          <div className="p-3">
+            {/* The composition, not the totals. A mart with primary suppressions
+                and *zero* complementary ones is the interesting case: the small
+                cells are blanked but recoverable by subtracting the published ones
+                from a published margin, so the control is running without
+                protecting anything. That is visible here as a bar with no purple
+                segment, and it is the reason this is a chart rather than a column
+                in the table below. */}
+            <StackedColumns
+              data={suppression}
+              series={[
+                { key: "published", name: "Published", colour: STATUS.good },
+                { key: "primary", name: "Primary suppressed", colour: STATUS.warn },
+                { key: "complementary", name: "Complementary", colour: STATUS.suppressed },
+              ]}
+              format={(v) => `${(v * 100).toFixed(0)}%`}
+              height={260}
+            />
+          </div>
+        )}
+      </Card>
 
       <Card title="Published marts" className="mt-4">
         {listing.isLoading ? (

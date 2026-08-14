@@ -15,6 +15,7 @@ import { useState } from "react";
 
 import { useApi } from "../api/hooks";
 import type { Envelope, LineageEntry, LineageHead, LineageVerification } from "../api/rows";
+import { ChartEmpty, TrendArea } from "../components/charts";
 import { DataTable, PageFooter } from "../components/DataTable";
 import { Badge, Button, Callout, Card, ErrorState, Grid, Mono, PageHeader, Spinner, Stat } from "../components/ui";
 import { count, digest, relative, timestamp } from "../lib/format";
@@ -27,6 +28,13 @@ export function Lineage() {
   const verification = useApi<LineageVerification>("/lineage/verify");
   const latest = useApi<{ items: LineageEntry[] }>("/lineage/latest");
   const entries = useApi<Envelope<LineageEntry>>("/lineage/entries", { query: { limit: 25, offset } });
+
+  // The API returns newest first, which is right for the table below and backwards
+  // for a chart: a chain reads forwards.
+  const committed = [...(entries.data?.items ?? [])]
+    .filter((row) => row.record_count !== null)
+    .sort((a, b) => a.seq - b.seq)
+    .map((row) => ({ label: row.seq, value: row.record_count ?? 0 }));
 
   const scope = verification.data?.scope;
 
@@ -89,6 +97,34 @@ export function Lineage() {
                 </ul>
               </Callout>
             ) : null}
+          </div>
+        )}
+      </Card>
+
+      <Card
+        title="Records committed per entry"
+        hint="Each entry's Merkle root commits to this many records. Newest 25, oldest first."
+        className="mt-4"
+      >
+        {entries.isLoading ? (
+          <Spinner />
+        ) : entries.error ? (
+          <ErrorState error={entries.error} needs="operator" />
+        ) : committed.length < 2 ? (
+          <ChartEmpty>Not enough entries to plot — at least two are needed.</ChartEmpty>
+        ) : (
+          <div className="p-3">
+            {/* Plotted against sequence, not time: the chain's order *is* the
+                sequence, and two entries recorded in the same second are still
+                strictly ordered. A time axis would put them on top of each other
+                and imply they were interchangeable, which is the one thing a
+                hash-chain says they are not. */}
+            <TrendArea
+              data={committed}
+              name="Records"
+              labelFormatter={(seq) => `entry #${seq}`}
+              height={220}
+            />
           </div>
         )}
       </Card>

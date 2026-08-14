@@ -18,6 +18,7 @@ const ScoreHistory = lazy(() =>
 
 import { useApi } from "../api/hooks";
 import { DIMENSIONS, type Envelope, type Failure, type Freshness, type QuarantineRow, type QuarantineSummary, type Rule, type Score } from "../api/rows";
+import { Heatmap } from "../components/charts";
 import { Column, DataTable, PageFooter } from "../components/DataTable";
 import { Badge, Callout, Card, ErrorState, Mono, PageHeader, ScoreBar, Select, Spinner, type Tone } from "../components/ui";
 import { count, duration, percent, ratio, timestamp, titleCase } from "../lib/format";
@@ -88,6 +89,38 @@ function Scores({ tenant }: { tenant: TenantFilter }) {
         <Suspense fallback={<Spinner label="Loading chart" />}>
           <ScoreHistory scores={history.data?.items ?? []} />
         </Suspense>
+      )}
+    </Card>
+
+    <Card
+      title="Six dimensions, every dataset"
+      hint="Where quality is weak, and whether it is weak in one place or everywhere"
+    >
+      {latest.isLoading ? (
+        <Spinner />
+      ) : latest.error ? (
+        <ErrorState error={latest.error} needs="viewer" />
+      ) : (
+        <div className="p-3">
+          {/* The one shape a table cannot show. Seventy-odd numbers in a grid are
+              read one at a time; the question here is about the pattern — is
+              `timeliness` weak everywhere, or is one dataset dragging it down. */}
+          <Heatmap
+            rows={(latest.data?.items ?? []).map((row) => `${row.dataset} · ${row.layer}`)}
+            columns={[...DIMENSIONS]}
+            cells={(latest.data?.items ?? []).flatMap((row) =>
+              DIMENSIONS.map((dimension) => ({
+                row: `${row.dataset} · ${row.layer}`,
+                column: dimension,
+                value: row[dimension],
+              })),
+            )}
+            // Fixed, not fitted to the data: a ramp stretched over 0.99–1.00 would
+            // render a 1% spread as the full range of the scale.
+            domain={[0.9, 1]}
+            threshold={0.95}
+          />
+        </div>
       )}
     </Card>
 

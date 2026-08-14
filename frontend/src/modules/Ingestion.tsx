@@ -14,6 +14,7 @@ import { useState } from "react";
 
 import { useApi } from "../api/hooks";
 import type { Envelope, IngestBatch, IngestSummary, Watermark } from "../api/rows";
+import { ChartEmpty, StackedColumns, seriesColour } from "../components/charts";
 import { DataTable, PageFooter } from "../components/DataTable";
 import { Badge, Card, ErrorState, Mono, PageHeader, Select, Spinner, type Tone } from "../components/ui";
 import { bytes, count, digest, relative, timestamp } from "../lib/format";
@@ -39,6 +40,17 @@ export function Ingestion() {
   });
   const watermarks = useApi<{ items: Watermark[] }>("/ingestion/watermarks", { query });
 
+  // accepted = batches - redelivered. The registry counts a redelivery against the
+  // batch it matched, so the two columns already partition the total.
+  const deliveries = [...(summary.data?.items ?? [])]
+    .sort((a, b) => b.batches - a.batches)
+    .slice(0, 8)
+    .map((row) => ({
+      label: `${row.dataset} · ${row.source}`,
+      accepted: Math.max(0, row.batches - row.redelivered),
+      redelivered: row.redelivered,
+    }));
+
   return (
     <>
       <PageHeader
@@ -47,7 +59,34 @@ export function Ingestion() {
         actions={<Select label="Tenant" value={tenant} options={TENANTS} onChange={setTenant} />}
       />
 
-      <Card title="By source" hint="Ingested batches only">
+      <Card
+        title="Batches, and how many were redeliveries"
+        hint="A redelivery is recognised and skipped — it is the idempotency working, not an error"
+      >
+        {summary.isLoading ? (
+          <Spinner />
+        ) : summary.error ? (
+          <ErrorState error={summary.error} needs="operator" />
+        ) : deliveries.length === 0 ? (
+          <ChartEmpty>Nothing has been ingested.</ChartEmpty>
+        ) : (
+          <div className="p-3">
+            {/* Stacked because the two numbers are parts of one total: every batch
+                offered was either new or a repeat. A redelivery *rate* that climbs
+                is a real upstream signal, and it is only visible as a proportion. */}
+            <StackedColumns
+              data={deliveries}
+              series={[
+                { key: "accepted", name: "New content", colour: seriesColour(0) },
+                { key: "redelivered", name: "Redelivered, skipped", colour: seriesColour(3) },
+              ]}
+              height={240}
+            />
+          </div>
+        )}
+      </Card>
+
+      <Card title="By source" hint="Ingested batches only" className="mt-4">
         {summary.isLoading ? (
           <Spinner />
         ) : summary.error ? (

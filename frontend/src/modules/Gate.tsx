@@ -16,6 +16,7 @@ import { useState } from "react";
 
 import { useApi } from "../api/hooks";
 import type { Envelope, GateDecision } from "../api/rows";
+import { ChartEmpty, DotPlot, STATUS } from "../components/charts";
 import { Column, DataTable, PageFooter } from "../components/DataTable";
 import { Badge, Callout, Card, ErrorState, PageHeader, ScoreBar, Select, Spinner } from "../components/ui";
 import { timestamp } from "../lib/format";
@@ -32,6 +33,16 @@ export function Gate() {
     query: { limit: 25, offset, ...query },
   });
   const overrides = useApi<Envelope<GateDecision>>("/gate/overrides", { query: { limit: 10 } });
+
+  const shortfall = (blocked.data?.items ?? [])
+    .filter((row) => row.overall_score !== null)
+    .sort((a, b) => (a.overall_score ?? 0) - (b.overall_score ?? 0))
+    .map((row) => ({
+      label: `${row.dataset} · ${row.layer}`,
+      value: row.overall_score ?? 0,
+      // Status colour used as status: every dot here is a blocked promotion.
+      colour: STATUS.bad,
+    }));
 
   return (
     <>
@@ -59,6 +70,32 @@ export function Gate() {
             rowKey={(row) => `${row.tenant}/${row.dataset}/${row.layer}`}
             columns={BLOCKED_COLUMNS}
           />
+        )}
+      </Card>
+
+      <Card
+        title="Score against the threshold"
+        hint="Every blocked promotion, and how far short it fell"
+        className="mt-4"
+      >
+        {blocked.isLoading ? (
+          <Spinner />
+        ) : blocked.error ? (
+          <ErrorState error={blocked.error} needs="viewer" />
+        ) : shortfall.length === 0 ? (
+          <ChartEmpty>Nothing is currently blocked.</ChartEmpty>
+        ) : (
+          <div className="p-3">
+            {/* A dot plot, not bars: these scores sit in a narrow band just under
+                the threshold, and the useful question is *how far short* rather
+                than how large. The threshold line is what each dot is read
+                against. */}
+            <DotPlot
+              data={shortfall}
+              threshold={blocked.data?.items?.[0]?.threshold ?? 0.95}
+              height={Math.max(140, shortfall.length * 30 + 40)}
+            />
+          </div>
         )}
       </Card>
 

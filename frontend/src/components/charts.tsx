@@ -460,7 +460,7 @@ export function TrendArea({
   const gradientId = `wash-${name.replace(/\W/g, "")}`;
   return (
     <ChartFrame height={height}>
-      <AreaChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: -14 }}>
+      <AreaChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
         <defs>
           <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor={colour} stopOpacity={0.18} />
@@ -469,13 +469,20 @@ export function TrendArea({
         </defs>
         <CartesianGrid stroke={GRID} vertical={false} />
         <XAxis dataKey="label" {...axisProps} minTickGap={24} />
-        <YAxis {...axisProps} tickFormatter={format} width={52} />
+        {/* 64, not 52: "150,000" needs the room, and at 52 the ticks rendered as
+            "0,000" with the leading digits cut off. */}
+        <YAxis {...axisProps} tickFormatter={format} width={64} />
         <Tooltip
           cursor={{ stroke: GRID, strokeWidth: 1 }}
           content={<ChartTooltip formatter={(v) => format(Number(v))} labelFormatter={labelFormatter} />}
         />
         <Area
-          type="monotone"
+          // Linear, not monotone. A spline between two measured points draws
+          // values that were never measured, and on the lineage chart it was
+          // visibly wrong: entries 58 and 59 differ by a hundred thousand records
+          // and the curve implied a smooth ramp between two discrete commits.
+          // Smoothing is decoration that changes what the chart says.
+          type="linear"
           dataKey="value"
           name={name}
           stroke={colour}
@@ -549,6 +556,168 @@ export function SplitDonut({
         <span className="text-[11px] text-ink-400">{centreLabel}</span>
       </div>
       <SeriesLegend entries={data.map((row) => ({ key: row.label, name: row.label, colour: row.colour }))} />
+    </div>
+  );
+}
+
+
+// ------------------------------------------------------------------ heatmap
+
+/**
+ * The blue sequential ramp, light to dark.
+ *
+ * One hue, never a rainbow. On this dark surface the reading is "brighter means
+ * more", so the ramp is used bright-for-high: a strong score glows and a weak one
+ * recedes toward the card. That direction is intuitive and has one problem — the
+ * cells worth finding are the dim ones — so cells below the threshold carry a
+ * status ring rather than being re-coloured. The ramp keeps meaning magnitude and
+ * the ring keeps meaning "needs a human".
+ */
+const SEQUENTIAL = [
+  "#0d366b",
+  "#104281",
+  "#184f95",
+  "#1c5cab",
+  "#256abf",
+  "#2a78d6",
+  "#3987e5",
+  "#5598e7",
+  "#6da7ec",
+  "#86b6ef",
+  "#9ec5f4",
+] as const;
+
+export interface HeatCell {
+  row: string;
+  column: string;
+  value: number | null;
+}
+
+/**
+ * A matrix of one measure across two categorical axes.
+ *
+ * Six quality dimensions across a dozen dataset-and-layer pairs is the one shape
+ * in this console a table genuinely cannot show: seventy-two numbers in a grid
+ * are read one at a time, and the question — *which dimension is weak, and is it
+ * weak everywhere or in one place* — is about the pattern, not the values.
+ *
+ * `domain` is given rather than taken from the data, because a ramp fitted to the
+ * observed range makes a spread of 0.99 to 1.00 look like a spread of 0 to 1.
+ */
+export function Heatmap({
+  cells,
+  rows,
+  columns,
+  domain,
+  threshold,
+  format = (v: number) => v.toFixed(3),
+}: {
+  cells: HeatCell[];
+  rows: string[];
+  columns: string[];
+  domain: [number, number];
+  threshold?: number;
+  format?: (value: number) => string;
+}) {
+  if (!cells.length) return <ChartEmpty>Nothing scored yet.</ChartEmpty>;
+
+  const byKey = new Map(cells.map((cell) => [`${cell.row} ${cell.column}`, cell.value]));
+  const [min, max] = domain;
+
+  const shade = (value: number): string => {
+    const fraction = Math.min(1, Math.max(0, (value - min) / (max - min || 1)));
+    const step = Math.round(fraction * (SEQUENTIAL.length - 1));
+    return SEQUENTIAL[step] ?? SEQUENTIAL[0];
+  };
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full border-separate border-spacing-0.5 text-[11px]">
+        <thead>
+          <tr>
+            <th className="sticky left-0 z-10 bg-ink-900 pr-2 text-left font-medium text-ink-400">
+              <span className="sr-only">Dataset</span>
+            </th>
+            {columns.map((column) => (
+              <th key={column} className="px-1 pb-1 text-center font-medium text-ink-400 capitalize">
+                {column}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row}>
+              <th
+                className="sticky left-0 z-10 max-w-44 truncate bg-ink-900 pr-2 text-right font-normal text-ink-300"
+                title={row}
+              >
+                {row}
+              </th>
+              {columns.map((column) => {
+                const value = byKey.get(`${row} ${column}`) ?? null;
+                if (value === null) {
+                  return (
+                    <td key={column} className="p-0">
+                      {/* Not scored is not zero. A blank cell that shaded like a
+                          low score would invent a measurement. */}
+                      <div
+                        className="flex h-8 items-center justify-center rounded-[3px] border border-dashed border-ink-700 text-ink-600"
+                        title={`${row} — ${column}: not scored`}
+                      >
+                        ·
+                      </div>
+                    </td>
+                  );
+                }
+                const below = threshold !== undefined && value < threshold;
+                return (
+                  <td key={column} className="p-0">
+                    <div
+                      className={`flex h-8 items-center justify-center rounded-[3px] transition-transform hover:scale-105 ${
+                        below ? "ring-1 ring-warn" : ""
+                      }`}
+                      style={{ background: shade(value) }}
+                      title={`${row} — ${column}: ${format(value)}${below ? " (below threshold)" : ""}`}
+                    >
+                      {/* White on the ramp's dark end, ink-900 on its light end:
+                          a fixed text colour is illegible at one end or the other. */}
+                      <span
+                        className="tnum font-medium"
+                        style={{ color: value > (min + max) / 1.35 ? "#0d0f14" : "#e8ecf2" }}
+                      >
+                        {format(value)}
+                      </span>
+                    </div>
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-ink-700 pt-2 text-[11px] text-ink-400">
+        <span className="inline-flex items-center gap-1.5">
+          {format(min)}
+          <span className="inline-flex overflow-hidden rounded-[2px]">
+            {SEQUENTIAL.map((step) => (
+              <span key={step} className="h-2.5 w-3" style={{ background: step }} />
+            ))}
+          </span>
+          {format(max)}
+        </span>
+        {threshold !== undefined ? (
+          <span className="inline-flex items-center gap-1.5">
+            <span className="size-2.5 rounded-[2px] ring-1 ring-warn" aria-hidden />
+            below {format(threshold)}
+          </span>
+        ) : null}
+        <span className="inline-flex items-center gap-1.5">
+          <span className="size-2.5 rounded-[2px] border border-dashed border-ink-700" aria-hidden />
+          not scored
+        </span>
+      </div>
     </div>
   );
 }

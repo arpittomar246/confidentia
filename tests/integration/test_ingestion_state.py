@@ -8,6 +8,7 @@ and a watermark can be rolled back after a bad advance.
 from __future__ import annotations
 
 import secrets
+from collections.abc import Iterator
 
 import pytest
 
@@ -29,6 +30,24 @@ pytestmark = [pytest.mark.integration]
 def require_database() -> None:
     if not db.healthcheck():
         pytest.skip("PostgreSQL not reachable; run scripts/install_postgres.sh")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def clean_up_test_batches(require_database: None) -> Iterator[None]:
+    """Remove the rows this module writes into the real registry.
+
+    `conftest.py` redirects the *data root* to a temporary directory but not the
+    database, because these tests exist to exercise the real Postgres. The
+    consequence went unnoticed for days: every run left `healthcare/unit_test`
+    batches behind, 170 of them had accumulated by August, and they were only
+    spotted when the ingestion chart started plotting `unit_test · test` beside
+    the real datasets.
+
+    Scoped to the module and keyed on the dataset name, so a parallel run of
+    anything else is untouched.
+    """
+    yield
+    db.execute("DELETE FROM platform.ingest_batch WHERE dataset = %s", ("unit_test",))
 
 
 @pytest.fixture
