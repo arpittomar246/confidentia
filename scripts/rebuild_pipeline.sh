@@ -101,5 +101,21 @@ step "quality financial"   cli quality run financial  --layer bronze
 step "evaluate healthcare" cli evaluate quality healthcare
 step "evaluate financial"  cli evaluate quality financial
 
+# Lineage last, because an entry binds a table to the code and keys in force *at the
+# time it was recorded* — recording Bronze before Silver has been written would
+# commit to a lake state that no longer exists by the time the run ends.
+#
+# This was missing entirely until the script was first run end to end. Every
+# developer machine already had a chain from earlier manual runs, so nobody noticed
+# that a clean checkout produced an empty Lineage page and gave
+# `scripts/verify_lineage.sh` nothing to verify. C3 is a contribution of this
+# project; the script that builds the demo has to produce it.
+step "lineage bronze"      cli lineage record healthcare --layer bronze
+step "lineage bronze fin"  cli lineage record financial  --layer bronze
+step "lineage silver"      cli lineage record healthcare --layer silver
+step "lineage silver fin"  cli lineage record financial  --layer silver
+step "lineage gold"        cli lineage record healthcare --layer gold
+step "lineage gold fin"    cli lineage record financial  --layer gold
+
 echo
 echo "pipeline rebuilt."
