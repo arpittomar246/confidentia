@@ -24,13 +24,15 @@ the harder, unanswered question:
 
 ## Contributions
 
-| | Contribution | Status |
+| | Contribution | Verified by |
 |---|---|---|
-| **C1** | Crypto-partitioned medallion storage — per-column encryption keys across Bronze/Silver | Feasibility proven (ADR 0007) |
-| **C2** | Attestation-gated key release — no key without a verified enclave measurement | Seam in place (`LocalKmsClient`) |
-| **C3** | Cryptographically verifiable lineage — signed, Merkle-chained provenance | Primitives in place (`common/hashing.py`) |
-| **C4** | Disclosure control on Gold aggregates and DQ metrics | Designed |
-| **C5** | Enclave placement planner and EPC-aware partition sizing | Designed |
+| **C1** | Crypto-partitioned medallion storage — per-column, per-sensitivity, per-tenant keys | Byte-level inspection; keyless reads refused in a separate OS process |
+| **C2** | Attestation-gated key release — no key without an approved code measurement | 19 recorded refusals across 367 requests |
+| **C3** | Cryptographically verifiable lineage — signed, Merkle-chained provenance | Four tamper attacks, each detected *for the correct reason* |
+| **C4** | Disclosure control on Gold aggregates — k-anonymity with complementary suppression | Suppression counts audited per publish |
+| **C5** | Enclave placement planner — boundary derived from the schema contracts | Placement is a derivation; every cost beside it labelled MODELLED |
+
+All five are implemented. The one caveat that matters is below.
 
 ## Honesty policy
 
@@ -46,6 +48,11 @@ derived from it is labelled `MODELLED`. No number in this repository is presente
 measurement unless it was measured.
 
 ## Getting started
+
+**New to the project?** [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) explains what
+this is in plain language and walks through a first run end to end, assuming no
+background in confidential computing, Spark or data engineering. The rest of this
+section is the terse version.
 
 Requires WSL2 with Ubuntu (see [ADR 0001](docs/adr/0001-runtime-environment.md) for why
 this is not optional on Windows).
@@ -89,9 +96,29 @@ docs/adr/        architecture decision records
 
 ## Documentation
 
-- [ADR 0001 — Local runtime environment](docs/adr/0001-runtime-environment.md)
-- [ADR 0007 — Column encryption strategy](docs/adr/0007-column-encryption-strategy.md)
-- [Stage 1 report](docs/stage-reports/stage-01.md)
+**Start here**
+
+- [Getting started](docs/GETTING_STARTED.md) — what this is, in plain language, and a
+  first run end to end
+- [The dissertation](docs/report/final-report.md) — abstract through conclusion
+- [Demo script](docs/report/demo-script.md) — a 12-minute guided tour
+
+**The decisions that constrain everything else** — 20 ADRs in [`docs/adr/`](docs/adr/):
+
+- [0001 — Local runtime environment](docs/adr/0001-runtime-environment.md), and why WSL
+  is not optional
+- [0007 — Column encryption strategy](docs/adr/0007-column-encryption-strategy.md), and
+  the KMS seam the whole design turns on
+- [0017 — Where the confidentiality boundary is drawn](docs/adr/0017-enclave-placement.md)
+- [0022 — Encrypting the landing zone](docs/adr/0022-landing-zone-encryption.md), and why
+  the violation detector now reads the disk rather than repeating a conclusion
+- [0024 — A SEV-SNP reader, written and marked unproven](docs/adr/0024-snp-reader-unvalidated.md)
+
+**Operations**
+
+- [Deploying to Azure](docs/deploy.md) — including what stops it working today
+- [Experiments](docs/experiments.md) — E1–E8, what each measured and what is unmeasured
+- [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) — the full engineering handover
 
 ## Licence
 
