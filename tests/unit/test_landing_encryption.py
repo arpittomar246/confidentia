@@ -302,6 +302,36 @@ class TestMigration:
         assert SSN.findall(path.read_bytes()) == []
         assert read_landing_part(path, crypto)["ssn"].tolist() == frame["ssn"].tolist()
 
+    def test_the_partition_key_is_not_written_into_the_part(
+        self, tmp_path, crypto: LandingCrypto, frame: pd.DataFrame, monkeypatch
+    ) -> None:
+        """The migration changes encryption and nothing else.
+
+        It once changed the schema too. Parts live under `batch=<digest>/`, and
+        `pq.read_table` reads a path as a one-file dataset with hive partitioning
+        on by default -- so the directory name came back as a column, and the
+        rewrite wrote it into the file. Every migrated part gained a `batch`
+        column that collided with its own partition directory, which is what made
+        Spark warn COLUMN_ALREADY_EXISTS on a landing read.
+        """
+        import pyarrow.parquet as pq
+
+        target = landing_path(tmp_path, TENANT, DATASET) / "batch=deadbeef"
+        target.mkdir(parents=True)
+        path = target / "part-00000.parquet"
+        frame.to_parquet(path, index=False)
+
+        monkeypatch.setattr(LandingCrypto, "for_tenant", classmethod(lambda cls, *a, **k: crypto))
+        reencrypt_landing(tmp_path)
+
+        written = pq.ParquetFile(
+            path, decryption_properties=crypto.decryption_properties()
+        ).schema_arrow.names
+        assert "batch" not in written
+        assert written == list(frame.columns)
+        # And the reader hands back the file's own columns, not the dataset view's.
+        assert list(read_landing_part(path, crypto).columns) == list(frame.columns)
+
     def test_dry_run_changes_nothing(self, tmp_path, frame: pd.DataFrame) -> None:
         target = landing_path(tmp_path, TENANT, DATASET) / "batch=deadbeef"
         target.mkdir(parents=True)

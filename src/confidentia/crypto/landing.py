@@ -453,7 +453,18 @@ def reencrypt_landing(
             )
 
         for path in offenders:
-            table = pq.read_table(path)
+            # `ParquetFile(...).read()`, not `read_table`. Landing parts live at
+            # `batch=<digest>/part-*.parquet`, and `read_table` defaults to
+            # `partitioning="hive"`: it reads the path as a one-file dataset and
+            # materialises the directory name as a column. This migration then
+            # wrote that column into the file, so a rewrite meant to change
+            # nothing but encryption silently added a `batch` column to every part
+            # it touched -- and the collision with its own partition directory is
+            # what makes Spark warn COLUMN_ALREADY_EXISTS on a landing read.
+            #
+            # Reading the file directly has no dataset layer and therefore no
+            # partition inference, whatever pyarrow's defaults become.
+            table = pq.ParquetFile(path).read()
             plaintext_bytes = path.stat().st_size
 
             if dry_run:

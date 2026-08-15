@@ -280,10 +280,19 @@ def read_landing_part(path: Path, crypto: LandingCrypto) -> pd.DataFrame:
     Used by verification and migration, and by anything that wants to inspect what
     arrived without standing up Spark. Bronze does not go through here — it reads
     the same files through Spark, which is the interop this design turns on.
+
+    Returns the columns the file actually holds. `pq.read_table` would instead read
+    the path as a one-file dataset and, because parts live under `batch=<digest>/`,
+    hand back an inferred `batch` column that is not in the file — so a verifier
+    comparing landing against its source would see a column the source never had.
     """
     import pyarrow.parquet as pq
 
-    return pq.read_table(path, decryption_properties=crypto.decryption_properties()).to_pandas()
+    return (
+        pq.ParquetFile(path, decryption_properties=crypto.decryption_properties())
+        .read()
+        .to_pandas()
+    )
 
 
 def iter_frame_chunks(frame: pd.DataFrame, chunk_rows: int) -> Iterator[pd.DataFrame]:
