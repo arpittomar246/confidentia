@@ -65,7 +65,12 @@ def run(
     from pyspark.sql import functions as F
 
     from confidentia.crypto.broker import request_keys
-    from confidentia.spark.session import apply_encryption, build_session
+    from confidentia.spark.session import (
+        apply_encryption,
+        build_session,
+        column_keys_for_frame,
+        set_column_keys,
+    )
     from confidentia.streaming.consumer import payload_schema
 
     work = settings.data_root / "bench" / "e1"
@@ -93,6 +98,26 @@ def run(
                 .withColumn("_ingested_at", F.current_timestamp())
                 .withColumn("_ingest_run_id", F.lit("bench-e1"))
             )
+
+        def _column_keys(frame: Any) -> str:
+            """Which key protects which column of a bench output.
+
+            `apply_encryption` above installs the crypto factory session-wide so
+            the batch arm can read the encrypted landing zone (ADR 0022). That
+            factory then governs every write in the session too, and a write with
+            no column mapping fails with "No column keys configured" — which is
+            how this benchmark broke silently after the landing zone was
+            encrypted.
+
+            Deriving the mapping from the frame rather than from the contract is
+            required: both arms add envelope columns and drop `ingest_date`, so
+            the contract's mapping names columns the output does not have.
+
+            Nothing is exempted. The bench output carries real tenant records, and
+            a throughput number measured without the encryption the real pipeline
+            pays for would flatter both arms equally but describe neither.
+            """
+            return column_keys_for_frame(frame, TENANT, plaintext=frozenset())
 
         def stream_arm() -> dict[str, Any]:
             target = work / "streaming"
@@ -122,6 +147,10 @@ def run(
                 "_source_file",
                 F.concat_ws(":", F.col("topic"), F.col("partition"), F.col("offset")),
             ).drop("topic", "partition", "offset")
+
+            # Set before `start`: the streaming write inherits the Hadoop
+            # Configuration in force when the query is constructed.
+            set_column_keys(spark, _column_keys(parsed))
 
             query = (
                 parsed.writeStream.format("delta")
@@ -161,6 +190,7 @@ def run(
             frame = envelope(typed, "file_drop").withColumn(
                 "_source_file", F.input_file_name()
             )
+            set_column_keys(spark, _column_keys(frame))
             frame.write.format("delta").mode("overwrite").save(str(target))
             written = spark.read.format("delta").load(str(target)).count()
             return {"rows": written}
