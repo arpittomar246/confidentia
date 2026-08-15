@@ -147,7 +147,7 @@ we receive on Tuesday"; Silver answers "what happened on Tuesday".
 | | |
 |---|---|
 | Python | 21,399 lines across `src/` |
-| Tests | 403 (326 unit, 77 integration) |
+| Tests | 404 (309 unit, 80 API, 15 integration) |
 | CI | 14 jobs, plus security and release workflows |
 | Migrations | 11 forward-only SQL migrations |
 | Design records | 20 ADRs, 19 stage reports |

@@ -18,7 +18,29 @@ sudo service postgresql start
 export CONFIDENTIA_KEYSTORE_PASSPHRASE="dev-passphrase-not-for-real-use"
 source .venv/bin/activate
 confidentia info                      # confirms settings load and the label reads MODELLED
+confidentia keys check                # MUST pass, or §5 dies mid-demo
 ```
+
+> **If `keys check` fails**, the running code is not approved for key release and
+> §5 stops with "a measured package changed". Any edit to `crypto/`, `pipelines/`,
+> `quality/`, `lineage/`, `evaluation/` or `streaming/` since the last approval does
+> this — it is the gate working, not a fault. Fix it now, not in the room:
+>
+> ```bash
+> confidentia keys approve
+> ```
+>
+> This happened during rehearsal, caused by a one-line bug fix committed hours
+> earlier. Run `keys check` **after** the last commit you intend to make.
+
+Then run the slow half of §5 once, before the room, and keep the terminal:
+
+```bash
+bash scripts/verify_lineage.sh        # ~8 minutes; claim 4 needs Spark
+```
+
+You will show claims 1–3 live in seconds and narrate claim 4 from this transcript.
+Say that you are doing so — see §5.
 
 ```bash
 # WSL terminal 2 — the console, leave running
@@ -56,7 +78,8 @@ Point at the **MODELLED** banner.
 bash scripts/verify_encryption.sh
 ```
 
-While it runs:
+**Takes 1m43s.** That is most of this section's budget, so the narration below is
+not optional padding — it is the section. Start talking as soon as you press enter.
 
 > "This doesn't trust the code. It reads the Parquet footer magic off disk — `PAR1`
 > is plaintext, `PARE` is an encrypted footer — greps the raw file for values that
@@ -100,7 +123,7 @@ bash scripts/verify_landing.sh --no-spark
 ```
 
 > "Footer magic on every file, a raw-byte grep for SSN and email patterns, and a
-> keyless read that has to be refused. Twenty-three files, zero identifier-shaped
+> keyless read that has to be refused. Twenty-five files, zero identifier-shaped
 > strings.
 >
 > The awkward part was that Bronze is written by Spark and ingestion is pandas, so
@@ -142,11 +165,19 @@ confidentia landing withdrawn
 ### 4 · Attestation refusing (90 seconds)
 
 ```bash
-confidentia keys audit | head -20
+confidentia keys audit --denied-only
 ```
 
-> "Fifteen refusals out of 347 requests. Four paths: unknown measurement, revoked
-> policy, tenant not permitted, stale evidence.
+**Use `--denied-only`.** Plain `keys audit` shows the twenty most recent decisions,
+and every recent decision is a grant — you would narrate refusals over a screen
+that has none. This is the C2 centrepiece; do not let it show a lock that has never
+said no.
+
+> "Nineteen refusals out of 464 requests — and every one of them is the same path,
+> an unapproved code measurement. The broker implements four: unknown measurement,
+> revoked policy, tenant not permitted, stale evidence. Three of them have never
+> fired on this lake. They're covered by tests rather than by this ledger, and I'd
+> rather tell you that than let the screen imply a history I don't have.
 >
 > Under `sim` this is a mechanism, not a guarantee — the process measures itself and
 > could lie. On Azure Managed HSM the same policy is enforced by a service that
@@ -161,13 +192,28 @@ confidentia keys audit | head -20
 ### 5 · Tamper detection (2 minutes)
 
 ```bash
-bash scripts/verify_lineage.sh
+bash scripts/verify_lineage.sh --no-spark
 ```
 
-> "Four attacks. The last one edits a single row inside the encrypted Bronze table
-> and undoes it with Delta time travel."
+**`--no-spark`, not the bare command.** The full run takes **8m18s** on this
+machine — claims 1–3 are ledger attacks in Postgres and finish in under four
+seconds; claim 4 opens the encrypted Bronze table through Spark and is the entire
+runtime. Running the bare command live would consume most of the demo.
 
-When it prints `row count unchanged`:
+> "Three attacks on the ledger itself: an edited payload, an edited column the
+> signature doesn't cover, and a deleted entry. Each one has to be caught, and
+> caught for the *right reason* — telling an operator 'broken link' when the
+> problem is a forged signature sends them to the wrong place."
+
+The script prints `claim 4: SKIPPED (--no-spark)` and says it has not been checked.
+Do not skip past that — say it, then show the transcript from before the room:
+
+> "There's a fourth claim this run didn't make, and the script says so rather than
+> printing three ticks and letting you assume four. It edits a single row inside
+> the encrypted Bronze table and undoes it with Delta time travel — it needs Spark,
+> so I ran it before we started. Here it is."
+
+In that transcript, point at `row count unchanged`:
 
 > "That's the point — the table is the same size, one field differs, and the Merkle
 > root moves. And it reports *which* of the four attacks it was, because telling an
@@ -213,7 +259,7 @@ confidentia bench results
 
 ### 8 · Close (30 seconds)
 
-> "Five contributions, six of eight experiments measured, 403 tests, 14 CI jobs.
+> "Five contributions, six of eight experiments measured, 404 tests, 14 CI jobs.
 >
 > The result I didn't expect is that tokenising identifiers doesn't shrink the
 > boundary — quasi-identifiers do that work, which makes disclosure control
@@ -233,7 +279,8 @@ confidentia bench results
 |---|---|
 | Dashboard unreachable | Skip §6. The CLI carries the demo; say "the console is a read-only view over what you've just seen." |
 | Postgres down | `sudo service postgresql start`, wait 5 s. Everything except §2 needs it. |
-| A script is slow | `verify_lineage.sh` takes ~40 s. Talk over it — that is what §5's narration is for. |
+| A script is slow | `verify_encryption.sh` takes 1m43s and `verify_lineage.sh --no-spark` under 4 s. Talk over the first — that is what §2's narration is for. |
+| `keys check` fails | `confidentia keys approve`. A measured package changed since the last approval. Everything needing a key — §5's claim 4, the Spark paths — stops until you do. |
 | Asked to show the code | `src/confidentia/tee/placement.py` — the rule is one function, `place()`, about 30 lines. |
 | Asked "show me a failure" | `confidentia quality failures --limit 5`, or the 15 refusals in §4. |
 

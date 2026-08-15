@@ -17,7 +17,26 @@
 # leaving the lake in a state the chain disagrees with.
 #
 #   bash scripts/verify_lineage.sh
+#   bash scripts/verify_lineage.sh --no-spark    # claims 1-3 only, seconds not minutes
+#
+# Claims 1-3 are ledger attacks and run entirely in Postgres. Claim 4 opens the
+# encrypted Bronze table through Spark, and on a developer box that is the whole
+# runtime: the full run takes minutes, the ledger claims take seconds. `--no-spark`
+# runs the fast three and says plainly that the fourth did not run, which is the
+# only honest way to shorten this -- a demo that skips claim 4 silently would be
+# claiming a check it had not made.
 set -uo pipefail
+
+WITH_SPARK=1
+for arg in "$@"; do
+    case "$arg" in
+    --no-spark) WITH_SPARK=0 ;;
+    *)
+        echo "usage: verify_lineage.sh [--no-spark]" >&2
+        exit 2
+        ;;
+    esac
+done
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR"
@@ -32,11 +51,16 @@ source .venv/bin/activate
 # reader to look at Spark and Delta when the actual cause is an edit to a measured
 # package and the fix is one command. That happened, in front of nobody, which is
 # the good version of finding out.
-if ! python -m confidentia.cli keys check >/dev/null 2>&1; then
+#
+# Only claim 4 needs it, so --no-spark does not ask: an unapproved build is not a
+# reason to refuse the three checks that never touch a key.
+if [[ $WITH_SPARK -eq 1 ]] && ! python -m confidentia.cli keys check >/dev/null 2>&1; then
     echo "The running code is not approved for key release, so claim 4 cannot open"
     echo "the Bronze table. A measured package changed. Approve this build first:"
     echo ""
     echo "    python -m confidentia.cli keys approve"
+    echo ""
+    echo "Or run the ledger claims alone:  bash scripts/verify_lineage.sh --no-spark"
     echo ""
     exit 1
 fi
@@ -77,7 +101,12 @@ section "baseline"
 # Re-record the target so its latest entry commits to the table as it is now.
 # Without this, a lake changed by an earlier pipeline run would make claim 4 pass
 # for the wrong reason -- the deep check would already be failing.
-cli lineage record "$TENANT" "$DATASET" --layer bronze | grep -aE "^  " || true
+#
+# Recording reads the table to compute its root, so this is a Spark call and exists
+# only for claim 4's benefit. Skipped with the claim it serves.
+if [[ $WITH_SPARK -eq 1 ]]; then
+    cli lineage record "$TENANT" "$DATASET" --layer bronze | grep -aE "^  " || true
+fi
 
 OUT="$(verify_out)"
 if [[ $? -eq 0 ]]; then
@@ -171,6 +200,21 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+if [[ $WITH_SPARK -eq 0 ]]; then
+    echo
+    echo "======== claim 4: SKIPPED (--no-spark) ========"
+    echo "  The three claims above are ledger attacks. Claim 4 -- an edited row in"
+    echo "  the encrypted Bronze table -- is the one they cannot make, and it needs"
+    echo "  Spark. It has NOT been checked by this run."
+    echo
+    if [[ $FAILURES -eq 0 ]]; then
+        echo "three of four tamper claims hold; claim 4 not attempted."
+    else
+        echo "${FAILURES} claims FAILED."
+    fi
+    exit $((FAILURES > 0))
+fi
+
 section "claim 4: an edited row in the lake is detected"
 # The check the other three cannot make. Claims 1-3 all assume the attacker went
 # after the ledger; this one assumes they left the ledger alone and changed the
