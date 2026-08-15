@@ -317,14 +317,35 @@ credentials.**
 
 ### "Your F1 for transaction is 0.891 in one place and 0.251 in another. Which is it?"
 
-> Both, and the difference is the interesting part. At Bronze a duplicate and a
-> legitimate redelivery are byte-identical, so every redelivered row counts as a
-> false positive for `duplicate_record` — 19,855 of that dataset's 20,450.
+> Both, on the same run, and the difference is the interesting part. At Bronze a
+> duplicate and a legitimate redelivery are byte-identical, so every redelivered row
+> counts as a false positive for `duplicate_record` — 19,855 of that dataset's
+> 20,450, which is 97% of its total error from one family.
 >
 > 0.251 includes it and measures the *layer's* blindness. 0.891 excludes it and
 > measures the *rules*. The API returns both and names which to report; the dashboard
 > shows the corrected one with the raw one beside it. Hiding either would be
 > dishonest in a different direction.
+
+**If they then ask why the console shows neither**, which it will on a clean lake —
+answer before they have to ask twice:
+
+> Because both come from the run of 12 August, when a Kafka redelivery was in
+> Bronze. The current lake has none, so `duplicate_record` scores 1.000 with zero
+> false positives and the dataset reads 0.975 corrected against 0.978 raw. The
+> contamination is conditional on a redelivery being present — it is a property of
+> the layer, not a permanent state of the data.
+>
+> Every run is retained, so it is checkable rather than remembered:
+>
+> ```sql
+> SELECT evaluated_at, family, false_positives FROM platform.dq_evaluation
+>  WHERE tenant='financial' AND dataset='transaction' AND scope='family';
+> ```
+>
+> Note `scope='family'` — the table also stores field-level and overall rows, and
+> summing across scopes double-counts. I made that mistake myself while checking
+> these figures and got a plausible wrong answer out of it.
 
 ### "You said recall went from 0.390 to 0.997. Did the rules get 2.5× better?"
 

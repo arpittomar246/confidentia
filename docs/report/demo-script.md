@@ -248,10 +248,32 @@ Switch to the browser. Three clicks, no more:
 
 **Evaluation** →
 
-> "0.891 and 0.251 for the same dataset. At Bronze a duplicate and a legitimate
-> redelivery are identical bytes, so every redelivery counts as a false positive.
-> The corrected figure is the headline, the raw one sits beside it. Hiding either
-> would be dishonest in a different direction."
+**Check the numbers on screen before narrating this one.** On a clean lake the page
+shows ~0.975 corrected against ~0.978 raw — almost no gap, because the contamination
+below only appears when a redelivery is in Bronze. Do not quote 0.891/0.251 as if
+they were on the screen; they are from the 12 August run.
+
+> "Two figures for the same dataset, and right now they're nearly identical —
+> 0.975 and 0.978. That's a clean lake. The reason both are shown is what happens
+> when it isn't.
+>
+> At Bronze a duplicate and a legitimate redelivery are identical bytes, so a
+> redelivery has to count as a false positive. On the twelfth, with a Kafka
+> redelivery in Bronze, this dataset read 0.891 corrected and **0.251** raw —
+> 19,855 of 20,450 false positives from that one family, 97% of the dataset's
+> error.
+>
+> The corrected figure is the headline, the raw one sits beside it, on a clean lake
+> as well as a dirty one. Showing both only when the gap is embarrassing would be
+> the dishonest version."
+
+If asked to prove the 12 August reading, it is in the platform, not in a note:
+
+```bash
+psql -c "SELECT evaluated_at, family, false_positives FROM platform.dq_evaluation
+         WHERE tenant='financial' AND dataset='transaction' AND scope='family'
+           AND evaluated_at::date = DATE '2026-08-12'"
+```
 
 **Gold marts → Encounters Daily** → scroll to a suppressed row.
 

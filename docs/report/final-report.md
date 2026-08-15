@@ -463,7 +463,7 @@ Measured precision, recall and F1, **excluding the contaminated Bronze
 | healthcare | patient | 1.000 | 0.996 | **0.998** |
 | financial | account | 1.000 | 0.983 | **0.991** |
 | healthcare | encounter | 0.834 | 1.000 | **0.910** |
-| financial | transaction | 0.837 | 0.954 | **0.891** |
+| financial | transaction | 0.998 | 0.954 | **0.975** |
 | healthcare | claim_line | 0.795 | 0.955 | **0.868** |
 
 Defect families with **no rule at all: 0**, down from 5, and held there by a CI job.
@@ -486,11 +486,39 @@ describes defects that exist and the catalogue covers the columns being corrupte
 7b measured the measurement apparatus; 7c measures the rules.
 
 **The contamination that cannot be fixed.** At Bronze, a duplicate and a legitimate
-redelivery are the same bytes. Every redelivered row counts as a false positive for
-`duplicate_record` — 19,855 of `transaction`'s 20,450. Including it takes that
-dataset's F1 from 0.891 to **0.251**. The API returns both figures and names which
-to report; the dashboard shows the corrected one as the headline with the raw one
-beside it.
+redelivery are the same bytes, so a redelivered row must count as a false positive
+for `duplicate_record`. It is a property of the layer, not a defect in the rule:
+Bronze is defined as what arrived, and what arrived twice arrived twice.
+
+It is also **conditional on a redelivery being present**, which makes the figures
+above worth stating carefully. The evaluation of **12 August 2026**, run against a
+Bronze that held a Kafka redelivery, recorded this for `financial/transaction`:
+
+| Condition | Precision | Recall | F1 |
+|---|---|---|---|
+| excluding `duplicate_record` | 0.837 | 0.954 | **0.891** |
+| including it | 0.144 | 0.959 | **0.251** |
+
+**19,855 of that run's 20,450 false positives were redeliveries** — 97% of the
+dataset's total error, from one family. Every other retained run, including the
+current lake, records `duplicate_record` at precision 1.000 with **zero** false
+positives, and the dataset at 0.975 excluding it against 0.978 including it. §6.2
+reports the current lake; the pair above is what the same code produces the moment
+a redelivery lands.
+
+Both readings come from `platform.dq_evaluation`, which retains every run, so the
+claim is checkable rather than remembered:
+
+```sql
+SELECT evaluated_at, family, false_positives
+  FROM platform.dq_evaluation
+ WHERE tenant='financial' AND dataset='transaction' AND scope='family';
+```
+
+The API returns both figures and names which to report; the dashboard shows the
+corrected one as the headline with the raw one beside it. That mattered on 12
+August and costs nothing on a clean lake, which is the argument for reporting both
+unconditionally rather than only when the gap is embarrassing.
 
 ---
 
