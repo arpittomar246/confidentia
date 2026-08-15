@@ -39,6 +39,29 @@ Then run the slow half of §5 once, before the room, and keep the terminal:
 bash scripts/verify_lineage.sh        # ~8 minutes; claim 4 needs Spark
 ```
 
+**Run this before starting the console, and with nothing else up.** Spark's driver
+takes ~2 GB, the Kafka broker 512 MB, and Postgres and the dashboard the rest of a
+3.9 GB box. Running all of them together is what took WSL down during rehearsal —
+`Wsl/Service/E_UNEXPECTED`, the whole distro, not just the command. The order in
+this section is the safe order: database, gate check, lineage, *then* the console.
+
+> **If this run is interrupted, check the lake before trusting it.** Claim 4 edits
+> a real row in `healthcare/provider` and undoes it with Delta time travel. A crash
+> between those two steps leaves the table tampered — which is exactly what
+> happened, at version 16 with `PRV-000000.specialty = 'TAMPERED'`. Recovery:
+>
+> ```bash
+> python scripts/lineage_tamper.py version healthcare provider
+> python scripts/lineage_tamper.py restore healthcare provider <pre-tamper version>
+> confidentia lineage verify --deep --tenant healthcare
+> ```
+>
+> The deep verify must report `provider@bronze: matches entry #N`. The script is
+> safe to run *if it finishes*; it is not safe to abandon halfway.
+
+If WSL does fall over, `wsl --shutdown` from PowerShell and start again — files on
+disk are unaffected, but Postgres, Kafka and the console all need restarting.
+
 You will show claims 1–3 live in seconds and narrate claim 4 from this transcript.
 Say that you are doing so — see §5.
 
@@ -281,6 +304,7 @@ confidentia bench results
 | Postgres down | `sudo service postgresql start`, wait 5 s. Everything except §2 needs it. |
 | A script is slow | `verify_encryption.sh` takes 1m43s and `verify_lineage.sh --no-spark` under 4 s. Talk over the first — that is what §2's narration is for. |
 | `keys check` fails | `confidentia keys approve`. A measured package changed since the last approval. Everything needing a key — §5's claim 4, the Spark paths — stops until you do. |
+| WSL dies (`E_UNEXPECTED`) | `wsl --shutdown` in PowerShell, start again, restart Postgres and the console. Then check the lake if a lineage run was interrupted — see the pre-flight. Do not run Spark and the console together on this box. |
 | Asked to show the code | `src/confidentia/tee/placement.py` — the rule is one function, `place()`, about 30 lines. |
 | Asked "show me a failure" | `confidentia quality failures --limit 5`, or the 15 refusals in §4. |
 
