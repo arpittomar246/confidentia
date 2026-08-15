@@ -536,11 +536,16 @@ pipeline never runs. Sweeping it was completely flat.
 
 | Arm | p50 | rows/s | vs batch |
 |---|---|---|---|
-| batch_file | 2.06 s | 29,143 | — |
-| streaming_kafka | 8.79 s | 6,826 | **×4.27** |
+| batch_file | 2.00 s | 29,982 | — |
+| streaming_kafka | 8.75 s | 6,859 | **×4.37** |
 
-Same 60,000 records into the same format. The producer sustains ~26,000 records/s,
-so the cost is entirely on the consume side.
+Same 60,000 records into the same format, and — since the fix recorded in §8 item 9
+— both arms now *write encrypted*, as the real pipeline does. The earlier figures
+(×4.27) were measured before the landing zone was encrypted and are no longer what
+the harness reproduces; the ratio is unchanged in substance. The producer sustains
+~22,000 records/s, so the cost is entirely on the consume side. The streaming arm
+writes 24 files to the batch arm's one, which is most of the difference: it is the
+price of a bounded micro-batch, not a defect.
 
 It also exposed an asymmetry: the batch arm *failed outright* on a type mismatch
 (`amount` declared string, generator writes DOUBLE) that the Kafka arm never sees,
@@ -613,6 +618,43 @@ Stated as findings, because most of them were found by this project's own checks
 
 8. **No frontend tests.** The three defects found in the dashboard were found by a
    human driving a browser, which is not repeatable.
+
+9. **The controls fire; nothing obliges anyone to read them.** Three defects found
+   in the final week share a shape, and it is not the one this project spent its
+   effort defending against. In each case the platform behaved correctly and
+   reported correctly, into somewhere no routine path forces a reader:
+
+   - **`rebuild_pipeline.sh` never recorded lineage.** It built Bronze, Silver,
+     Gold, quality and evaluation, then stopped. Every development machine already
+     had a chain from earlier manual runs, so the omission was invisible; a clean
+     checkout produced an empty Lineage page and gave `verify_lineage.sh` nothing
+     to verify. The script an examiner is told to run in Appendix A did not
+     demonstrate C3.
+   - **E1 stopped working when the landing zone was encrypted** (ADR 0022). The
+     benchmark fails outright with `No column keys configured`, and did so from the
+     moment landing became encrypted until someone next ran it — which was weeks
+     later. An experiment that only runs on demand is indistinguishable from a
+     passing one while nobody demands it.
+   - **The ADR 0022 migration added a column to 23 of 25 landing parts.** `pq.
+     read_table` materialises the hive partition key, so a rewrite meant to change
+     only encryption also changed the schema. The platform *caught this as it
+     happened*: it logged `landing_undeclared_columns_encrypted` naming the column,
+     and encrypted it under the strictest key rather than skipping it. Every
+     control worked. The finding went to a log line.
+
+   The generalisation is uncomfortable and worth stating plainly: this project
+   invested in making controls *correct* — refusals that fail closed, verification
+   from bytes rather than from the absence of an error — and comparatively little
+   in making their output *unignorable*. A detection that reaches only a log, an
+   on-demand script, or a page nobody opens has a failure mode the detection logic
+   cannot fix. The quality gate (§5.4) is the one control in the platform that does
+   not have this problem, because it blocks a pipeline rather than reporting to
+   one; that contrast is the argument for where the remaining detections belong.
+
+   None of the three caused data loss. That is the point. They were found by
+   running things, not by the platform telling anyone — and a control whose
+   discovery depends on someone happening to run the right script is not yet an
+   operational control.
 
 ---
 
@@ -722,9 +764,23 @@ confidentia gold disclosure             # C4: suppression counts per mart
 confidentia plan placement && confidentia plan sweep   # C5
 confidentia evaluate report             # §6: P/R/F1 against ground truth
 confidentia bench e4 && confidentia bench e2           # §7
-confidentia bench e1 && confidentia bench e8
+confidentia bench e8
 bash scripts/ci_local.sh                # the 14 CI jobs, locally
 ```
+
+E1 needs a broker holding exactly the records it compares against, so it does not
+belong in the sequence above:
+
+```bash
+bash scripts/kafka.sh reset --yes       # and clear the streaming checkpoint
+bash scripts/kafka.sh start
+confidentia stream produce financial transaction --limit 60000 --rate 0
+confidentia bench e1                    # §7.3
+```
+
+Leftovers in the topic are counted by the streaming arm — it reads from
+`earliest` — and the two arms stop being comparable. The reset is the reason this
+sequence is separate rather than one more line above.
 
 ## Appendix B — Where the design decisions live
 
