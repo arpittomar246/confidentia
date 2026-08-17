@@ -81,8 +81,10 @@ RULE_COLOUR = "333333"    # 1pt rule under the header
 HEADER_FILL = "EDEDED"
 
 # Pandoc's default sets top and bottom cell margins to zero. That is fine for an
-# unbordered table and cramped once there are lines to touch.
-CELL_MARGIN_Y = 60        # 3pt
+# unbordered table and cramped once there are lines to touch. 2pt is enough to keep
+# text off the rules while costing the least height — the §6 tables are held on one
+# page each, so every point of row height comes back as white space below them.
+CELL_MARGIN_Y = 40        # 2pt
 CELL_MARGIN_X = 108       # pandoc's default, kept
 
 
