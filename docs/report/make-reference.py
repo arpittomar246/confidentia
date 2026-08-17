@@ -19,6 +19,12 @@ What it changes, and why:
   the usual substitute, does not.
 - **Page numbers, centred in the footer.** A printed dissertation without them is
   unusable in a viva.
+- **Bordered tables with a bold, shaded header row.** Pandoc's default draws one
+  rule under the header and nothing else. That is good typography and it is not
+  what a dissertation is marked against; a five-column table of measurements reads
+  better on paper with a grid. Done as conditional formatting on the `firstRow` of
+  the table style, which every pandoc table opts into via `tblLook`, so no markdown
+  changes and no per-table markup.
 
 The patches are applied by locating each style element and rewriting it, rather than
 by string replacement against a pretty-printed file whose whitespace is not a
@@ -59,6 +65,57 @@ SOURCE_CODE_STYLE = (
     '<w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/>'
     "<w:contextualSpacing/></w:pPr>"
     "<w:rPr>" + CODE_FONTS + '<w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr>'
+    "</w:style>"
+)
+
+# Table styling. Pandoc's default Table style carries a single rule under the header
+# and no other borders. This replaces it with a grid and a bold, shaded header.
+#
+# The header formatting is conditional formatting on `firstRow` rather than direct
+# run properties, because pandoc writes the header cells as plain runs — there is
+# nothing to make bold at the document level without rewriting every table. Every
+# pandoc table sets `<w:tblLook w:firstRow="1" .../>`, which is what opts each one
+# into the block below.
+GRID_COLOUR = "808080"    # 0.5pt grid, grey enough not to fight the text
+RULE_COLOUR = "333333"    # 1pt rule under the header
+HEADER_FILL = "EDEDED"
+
+# Pandoc's default sets top and bottom cell margins to zero. That is fine for an
+# unbordered table and cramped once there are lines to touch.
+CELL_MARGIN_Y = 60        # 3pt
+CELL_MARGIN_X = 108       # pandoc's default, kept
+
+
+def border(edge: str, size: int, colour: str) -> str:
+    return f'<w:{edge} w:val="single" w:sz="{size}" w:space="0" w:color="{colour}"/>'
+
+
+TABLE_STYLE = (
+    '<w:style w:type="table" w:default="1" w:styleId="Table">'
+    '<w:name w:val="Table"/><w:basedOn w:val="TableNormal"/><w:qFormat/>'
+    "<w:tblPr>"
+    '<w:tblInd w:type="dxa" w:w="0"/>'
+    "<w:tblBorders>"
+    + "".join(
+        border(edge, 4, GRID_COLOUR)
+        for edge in ("top", "left", "bottom", "right", "insideH", "insideV")
+    )
+    + "</w:tblBorders>"
+    "<w:tblCellMar>"
+    f'<w:top w:type="dxa" w:w="{CELL_MARGIN_Y}"/>'
+    f'<w:left w:type="dxa" w:w="{CELL_MARGIN_X}"/>'
+    f'<w:bottom w:type="dxa" w:w="{CELL_MARGIN_Y}"/>'
+    f'<w:right w:type="dxa" w:w="{CELL_MARGIN_X}"/>'
+    "</w:tblCellMar>"
+    "</w:tblPr>"
+    '<w:tblStylePr w:type="firstRow">'
+    "<w:rPr><w:b/><w:bCs/></w:rPr>"
+    "<w:tcPr>"
+    "<w:tcBorders>" + border("bottom", 8, RULE_COLOUR) + "</w:tcBorders>"
+    f'<w:shd w:val="clear" w:color="auto" w:fill="{HEADER_FILL}"/>'
+    '<w:vAlign w:val="bottom"/>'
+    "</w:tcPr>"
+    "</w:tblStylePr>"
     "</w:style>"
 )
 
@@ -114,6 +171,15 @@ def patch_styles(xml: str) -> str:
     # diagram. Declaring it here wins.
     if find_style(xml, "SourceCode") is None:
         xml = xml.replace("</w:styles>", SOURCE_CODE_STYLE + "</w:styles>", 1)
+
+    # Table: replaced wholesale rather than patched. The default is a rule under the
+    # header and nothing else, so there is no border block to amend — and leaving the
+    # original's firstRow rule in place alongside a new one gives the header two.
+    match = find_style(xml, "Table")
+    if match is None:
+        problems.append("style Table not found; tables left unbordered")
+    else:
+        xml = xml[: match.start()] + TABLE_STYLE + xml[match.end() :]
 
     return xml
 
