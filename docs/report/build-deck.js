@@ -110,7 +110,28 @@ function tableOn(slide, rows, opts) {
   });
 }
 
-const th = (t) => ({ text: t, options: { bold: true, color: C.muted, fontSize: 10.5, fill: { color: C.card2 } } });
+// Header cells follow the report's tables: full-strength text at body size over a
+// fill, separated from the data by a rule heavier than the grid. The deck had them
+// muted and a point smaller, which made the header the quietest row on the slide
+// rather than the one that says what the columns are.
+//
+// The same treatment inverts on a dark slide. In the report the header rule is
+// darker than the grid; here it has to be lighter, so it reads as emphasis rather
+// than as a gap. Border order is [top, right, bottom, left].
+const th = (t) => ({
+  text: t,
+  options: {
+    bold: true,
+    color: C.text,
+    fill: { color: C.card2 },
+    border: [
+      { type: "solid", color: C.line, pt: 0.5 },
+      { type: "solid", color: C.line, pt: 0.5 },
+      { type: "solid", color: C.dim, pt: 1.5 },
+      { type: "solid", color: C.line, pt: 0.5 },
+    ],
+  },
+});
 const td = (t, o = {}) => ({ text: t, options: { color: C.text, ...o } });
 
 // ================================================================= 1. TITLE
@@ -497,7 +518,10 @@ const td = (t, o = {}) => ({ text: t, options: { color: C.text, ...o } });
   s.addChart(
     pres.ChartType.bar,
     [
-      { name: "Precision", labels: ["patient", "account", "encounter", "transaction", "claim_line"], values: [1.0, 1.0, 0.834, 0.837, 0.795] },
+      // transaction is 0.998 on the current lake. It read 0.837 on 12 August, when a
+      // Kafka redelivery was in Bronze — that run is the card on the right, not this
+      // chart, which reports what the platform scores today.
+      { name: "Precision", labels: ["patient", "account", "encounter", "transaction", "claim_line"], values: [1.0, 1.0, 0.834, 0.998, 0.795] },
       { name: "Recall", labels: ["patient", "account", "encounter", "transaction", "claim_line"], values: [0.996, 0.983, 1.0, 0.954, 0.955] },
     ],
     {
@@ -505,7 +529,10 @@ const td = (t, o = {}) => ({ text: t, options: { color: C.text, ...o } });
       barDir: "col", chartColors: [C.accent, C.purple],
       showTitle: false, showLegend: true, legendPos: "t", legendColor: C.muted, legendFontSize: 10,
       showValue: true, dataLabelPosition: "outEnd", dataLabelColor: C.text, dataLabelFontSize: 8,
-      dataLabelFormatCode: "0.00",
+      // Three decimals, as the report uses. At two, transaction's 0.998 precision
+      // rounds to 1.00 and reads as indistinguishable from patient and account,
+      // which are genuinely 1.000.
+      dataLabelFormatCode: "0.000",
       valAxisMinVal: 0, valAxisMaxVal: 1.05,
       catAxisLabelColor: C.muted, valAxisLabelColor: C.muted,
       catAxisLabelFontSize: 10, valAxisLabelFontSize: 9,
@@ -521,8 +548,8 @@ const td = (t, o = {}) => ({ text: t, options: { color: C.text, ...o } });
   });
 
   card(s, { x: 8.3, y: 3.6, w: 4.4, h: 1.55 });
-  s.addText("0.891  vs  0.251", { x: 8.6, y: 3.78, w: 3.8, h: 0.32, fontFace: BODY, fontSize: 13, bold: true, color: C.warn, margin: 0 });
-  s.addText("The same dataset. At Bronze a duplicate and a redelivery are identical bytes, so 19,855 legitimate redeliveries count as false positives. Both are returned; the corrected one leads.", {
+  s.addText(`0.891  vs  0.251   ${DOT}   12 Aug`, { x: 8.6, y: 3.78, w: 3.8, h: 0.32, fontFace: BODY, fontSize: 13, bold: true, color: C.warn, margin: 0 });
+  s.addText("With a Kafka redelivery in Bronze, where a duplicate and a redelivery are identical bytes: 19,855 of 20,450 false positives were redeliveries. The chart is today's clean lake — 0.975 vs 0.978.", {
     x: 8.6, y: 4.17, w: 3.8, h: 0.95, fontFace: BODY, fontSize: 11, color: C.muted, margin: 0,
   });
 
