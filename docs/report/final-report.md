@@ -100,8 +100,6 @@ scores the platform against ground truth, and the placement planner.
 | **C4** | Disclosure control on Gold aggregates: k-anonymity with complementary suppression | 8,729 primary and 250 complementary suppressions on one mart |
 | **C5** | Enclave placement planner: boundary derived from contracts, cost modelled | Placement is a derivation; costs labelled MODELLED |
 
----
-
 ## 3. Architecture
 
 ```
@@ -144,7 +142,7 @@ we receive on Tuesday"; Silver answers "what happened on Tuesday".
 
 ### 3.2 Scale of the implementation
 
-| | |
+| Measure | Extent |
 |---|---|
 | Python | 21,399 lines across `src/` |
 | Tests | 404 (309 unit, 80 API, 15 integration) |
@@ -152,8 +150,6 @@ we receive on Tuesday"; Silver answers "what happened on Tuesday".
 | Migrations | 11 forward-only SQL migrations |
 | Design records | 20 ADRs, 19 stage reports |
 | Data processed | 422,297 Bronze rows across 11 datasets, two tenants |
-
----
 
 ## 4. The honesty policy
 
@@ -329,7 +325,7 @@ point.
 | gold | 279,299 | 70,092 ms | 14,139 ms | ×1.202 |
 | quality | 279,299 | 15,764 ms | 3,273 ms | ×1.208 |
 | lineage | 422,297 | 7,397 ms | 1,600 ms | ×1.216 |
-| **pipeline** | | **125,909 ms** | **25,906 ms** | **×1.206** |
+| **pipeline** | — | **125,909 ms** | **25,906 ms** | **×1.206** |
 
 **EPC-aware partition sizing.** At the measured row width (116 B, row-weighted
 across 12 datasets) and a 128 MB EPC at 75% utilisation, one partition holds
@@ -492,12 +488,14 @@ Bronze is defined as what arrived, and what arrived twice arrived twice.
 
 It is also **conditional on a redelivery being present**, which makes the figures
 above worth stating carefully. The evaluation of **12 August 2026**, run against a
-Bronze that held a Kafka redelivery, recorded this for `financial/transaction`:
+Bronze that held a Kafka redelivery, recorded this for `financial/transaction` —
+*corrected* excludes `duplicate_record` and measures the rules, *raw* includes it
+and measures the layer:
 
-| Condition | Precision | Recall | F1 |
+| Reading | Precision | Recall | F1 |
 |---|---|---|---|
-| excluding `duplicate_record` | 0.837 | 0.954 | **0.891** |
-| including it | 0.144 | 0.959 | **0.251** |
+| corrected | 0.837 | 0.954 | **0.891** |
+| raw | 0.144 | 0.959 | **0.251** |
 
 **19,855 of that run's 20,450 false positives were redeliveries** — 97% of the
 dataset's total error, from one family. Every other retained run, including the
