@@ -37,6 +37,21 @@ RUN npm run build
 # so the number above stays checkable.
 FROM nginx:1.31-alpine AS runtime
 
+# 1.31 no longer measures zero. Alpine published fixes for brotli-libs
+# (CVE-2026-111497, CRITICAL) and curl/libcurl (CVE-2026-92392, HIGH) that the
+# upstream tag has not been rebuilt against, and 1.31-alpine is the newest minor
+# nginx publishes -- so there is no base to bump to, which is how the three
+# findings above were each cleared.
+#
+# Upgrading the installed packages is the remaining honest option. Measured on
+# both sides with the scanner the gate uses (trivy 0.73.0, --ignore-unfixed,
+# HIGH/CRITICAL): 3 findings before, 0 after. It costs the property the pin was
+# bought for, because the package set now moves under a rebuild -- but the gate
+# holds this image to zero, and a base that cannot reach zero cannot stay both
+# pinned and scanned. Drop this line when nginx rebuilds; the pin alone is the
+# better state.
+RUN apk upgrade --no-cache
+
 COPY docker/frontend/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 

@@ -74,6 +74,15 @@ jobs:
   #   spark     55     org.apache.derby, zookeeper, avro, thrift, protobuf ...
   #   airflow  125     ray, litellm, openssl, gnutls, the Debian base ...
   #
+  # Re-measured 2026-11-02, after eleven weeks of advisory drift turned the frontend
+  # gate red on brotli-libs (CVE-2026-111497) and curl (CVE-2026-92392). Back to 0,
+  # but by `apk upgrade` in the runtime stage rather than a base bump: 1.31-alpine is
+  # the newest minor nginx publishes and upstream had not rebuilt it against the
+  # Alpine fixes, so there was nothing to bump to. See docker/frontend/Dockerfile.
+  # api measured 0 unchanged. The two ungated counts were not re-measured and will
+  # have moved -- they are reported, not gated, so nothing depends on them being
+  # current.
+  #
   # Spark's are Java jars *inside the pyspark wheel*; Airflow's are the upstream
   # official image and its providers. Trivy calls them fixable because a fix exists
   # in the upstream library -- not because this repository can apply it without

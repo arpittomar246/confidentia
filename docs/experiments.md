@@ -22,6 +22,20 @@ part of that plan would be dishonest. Candidates are proposed at the end.
 Every result below is recorded in `platform.benchmark_result` with the machine
 configuration that produced it. `confidentia bench results` prints them.
 
+## The Spark version these numbers were taken on
+
+E1, E2 and E4 all time Spark writes, so the engine version is part of the result and
+was not written down. It is recorded here now: **every Spark figure in this document
+and in §7 of the report was measured on `pyspark==3.5.3`.**
+
+The pin moved to `3.5.9` on 2026-11-02, because 3.5.3 carries PYSEC-2026-3966 and the
+dependency audit gates on it. Nothing was re-measured for that bump — the throughput
+numbers above and in the report are 3.5.3 numbers, and a patch release within 3.5 is
+not expected to move them, but that is an expectation and not a measurement. Re-running
+`confidentia bench e4` on 3.5.9 would settle it, and the stored rows in
+`platform.benchmark_result` carry the configuration of each run, so the two would be
+distinguishable rather than merged.
+
 ---
 
 ## E4 — what Parquet Modular Encryption costs **[MEASURED]**

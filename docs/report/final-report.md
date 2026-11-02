@@ -524,6 +524,11 @@ unconditionally rather than only when the gap is embarrassing.
 
 Six of eight measured. Full detail in `docs/experiments.md`.
 
+Every Spark timing below was measured on `pyspark==3.5.3`. The pin has since moved to
+`3.5.9` to clear a published advisory, and nothing here was re-measured for it — a
+patch release within 3.5 is not expected to move these numbers, but that is an
+expectation, not a measurement.
+
 ### 7.1 E4 — cost of Parquet Modular Encryption **[MEASURED]**
 
 3,000,000 rows, one warm-up, five interleaved repeats, arms verified by footer

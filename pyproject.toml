@@ -27,7 +27,7 @@ dependencies = [
 [project.optional-dependencies]
 # Spark + Delta. Pinned as a set: delta-spark 3.2.x targets Spark 3.5.x only.
 spark = [
-    "pyspark==3.5.3",
+    "pyspark==3.5.9",
     "delta-spark==3.2.1",
     "pyarrow>=15.0,<18",
 ]
