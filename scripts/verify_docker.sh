@@ -273,6 +273,18 @@ sys.exit(0 if api and api[0]["health"] == "up" else 1)
             bad "platform metrics not queryable through prometheus"
         fi
 
+        # Polled, not probed once. This was a bare status check run immediately after
+        # the prometheus assertions, which passed only because Grafana used to be ready
+        # by then. 13.3.0 needs about a minute to run its migrations and load its
+        # plugins, so the single probe became a guaranteed failure -- and it reported
+        # "grafana is broken" when the truth was "grafana is slow". Same reasoning as
+        # the api and prometheus waits above: polling beats a fixed sleep that is
+        # either flaky or wasteful.
+        for _ in $(seq 1 30); do
+            [[ "$(status "${graf}/api/health")" == "200" ]] && break
+            sleep 4
+        done
+
         [[ "$(status "${graf}/api/health")" == "200" ]] \
             && ok "grafana healthy" || bad "grafana healthy"
 

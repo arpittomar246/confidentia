@@ -84,7 +84,21 @@ services:
     networks: [confidentia]
 
   minio:
-    image: minio/minio:latest
+    # Not `minio/minio`. MinIO withdrew its community container images: Docker Hub
+    # answers "repository does not exist or may require 'docker login'" and
+    # quay.io/minio/minio returns 401, so the old reference cannot be pulled by
+    # anyone, which is what broke `verify_docker.sh` and with it every push.
+    #
+    # Chainguard's image is the upstream MinIO server, currently
+    # RELEASE.2026-10-23, and ships `mc`, so the command and the healthcheck below
+    # are unchanged. Bitnami's archive namespace was the other candidate and was
+    # rejected: it is frozen on a DEVELOPMENT build from May 2025.
+    #
+    # `latest` because Chainguard's free tier publishes no version tags. That is
+    # weaker than the pins elsewhere in this file and is accepted for a service
+    # that exists so laptop runs can exercise the S3 backend -- `STORAGE_BACKEND`
+    # defaults to `local`, and nothing in the report depends on this container.
+    image: chainguard/minio:latest
     profiles: [core, batch, stream, bench, demo]
     command: server /data --console-address ":9001"
     environment:
@@ -237,7 +251,10 @@ services:
 
   # ------------------------------------------------------------ monitoring
   prometheus:
-    image: prom/prometheus:latest
+    # Pinned. This was `latest`, and `latest` is how the monitoring stack drifted
+    # without a commit: nothing here changed between August and November, but the
+    # images did.
+    image: prom/prometheus:v3.13.2
     profiles: [demo]
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -262,7 +279,10 @@ services:
     networks: [confidentia]
 
   grafana:
-    image: grafana/grafana:latest
+    # Pinned, for the reason above and with evidence: `latest` had moved to 13.3.0,
+    # which starts far more slowly than the version this stack was written against
+    # -- 728 schema migrations and about twenty bundled plugins.
+    image: grafana/grafana:13.3.0
     profiles: [demo]
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
@@ -282,8 +302,14 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
+      # Measured at 55s to healthy on 13.3.0, against a budget of 15s x 5 = 75s with
+      # no start period -- close enough to the edge that a loaded machine crosses it.
+      # Failures inside the start period do not count against `retries`.
+      start_period: 90s
     depends_on: [prometheus]
     deploy:
       resources:
-        limits: {memory: 256M}
+        # 512M, not 256M. 13.3.0 settles at 215 MiB, which is 84% of the old cap --
+        # one plugin away from being OOM-killed rather than merely slow.
+        limits: {memory: 512M}
     networks: [confidentia]
