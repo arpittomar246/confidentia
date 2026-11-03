@@ -22,8 +22,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -40,8 +40,8 @@ jobs:
   unit-tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -89,8 +89,8 @@ jobs:
       CONFIDENTIA_DATA_ROOT: /tmp/confidentia-data
       CONFIDENTIA_KEYSTORE_PASSPHRASE: ci-only-throwaway-passphrase
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -111,7 +111,7 @@ jobs:
   ground-truth-isolation:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: bash scripts/check_ground_truth_isolation.sh
 
   # A defect the generator injects into a column no rule covers is a permanent
@@ -122,8 +122,8 @@ jobs:
   plan-rule-coverage:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with: {python-version: "3.11"}
       - run: pip install -e ".[dev,generators,storage,ingestion,spark,lake,api,observability]"
       - run: python scripts/check_plan_rule_coverage.py
@@ -135,8 +135,8 @@ jobs:
   dag-cli-contract:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with: {python-version: "3.11"}
       - run: pip install -e ".[dev,generators,storage,ingestion,spark,lake,api,observability]"
       - run: python scripts/check_dag_cli_contract.py
@@ -148,8 +148,8 @@ jobs:
   openapi-schema:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with: {python-version: "3.11"}
       - run: pip install -e ".[dev,generators,storage,ingestion,spark,api]"
       - run: python scripts/export_openapi.py --check
@@ -164,8 +164,8 @@ jobs:
     defaults:
       run: {working-directory: frontend}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -186,8 +186,8 @@ jobs:
     defaults:
       run: {working-directory: infrastructure/terraform}
     steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
         with: {terraform_version: "1.9.8", terraform_wrapper: false}
       - run: terraform fmt -check -recursive
       - run: terraform init -backend=false -input=false
@@ -206,8 +206,8 @@ jobs:
   declared-dependencies:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with: {python-version: "3.11"}
       - run: python scripts/check_declared_dependencies.py
 
@@ -218,12 +218,12 @@ jobs:
   encryption-guarantee:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -275,8 +275,8 @@ jobs:
   generator-determinism:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -311,7 +311,7 @@ jobs:
   compose-validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: bash scripts/verify_docker.sh --static
 
   # The expensive half: the images must actually build, and the core profile must
@@ -322,7 +322,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # These images total ~6 GB with layers. The preinstalled toolchains this
       # project never uses are the cheapest thing to remove.
       - name: Reclaim disk
