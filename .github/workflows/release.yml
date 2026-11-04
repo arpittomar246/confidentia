@@ -114,10 +114,24 @@ jobs:
       - name: Generate SBOM
         env:
           IMAGE_REF: ${{ steps.mode.outputs.publish == 'true' && format('{0}/{1}-{2}@{3}', env.REGISTRY, github.repository, matrix.image, steps.build.outputs.digest) || format('confidentia-{0}:dryrun', matrix.image) }}
+          # Trivy carries its own registry credentials when publishing, and this
+          # is the one line a dry run can never test. Publishing sets `push: true`
+          # and `load: false`, so the image is in GHCR and *not* in this runner's
+          # daemon; the scan is therefore a remote pull. The package is private
+          # because the repository is, and the host's `docker login` does not reach
+          # inside the trivy container, which is given only the socket and the
+          # workspace. Without these, trivy requests an anonymous token and GHCR
+          # answers UNAUTHORIZED -- which is exactly how v0.1.0 failed, after dry
+          # runs that each scanned a local tag and authenticated to nothing.
+          # Passed through by name, not by value, so the token stays out of the
+          # command line and the process list.
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$PWD:/work" -w /work \
+            -e TRIVY_USERNAME -e TRIVY_PASSWORD \
             aquasec/trivy:0.73.0 image --quiet \
             --scanners license,vuln --format cyclonedx \
             --output "sbom-${{ matrix.image }}.cdx.json" \
