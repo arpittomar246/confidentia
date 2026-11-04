@@ -245,7 +245,7 @@ const td = (t, o = {}) => ({ text: t, options: { color: C.text, ...o } });
   s.addText("Observed on this machine", { x: 2.42, y: 2.15, w: 3.9, h: 0.3, valign: "middle", fontFace: BODY, fontSize: 11.5, color: C.muted, margin: 0 });
   s.addText(
     [
-      { text: "Cryptography, storage, Spark throughput", options: { bullet: true, breakLine: true } },
+      { text: "Cryptography, storage, Spark throughput (on pyspark 3.5.3)", options: { bullet: true, breakLine: true } },
       { text: "Data quality precision and recall", options: { bullet: true, breakLine: true } },
       { text: "Deduplication and disclosure suppression", options: { bullet: true, breakLine: true } },
       { text: "Lineage digesting and tamper detection", options: { bullet: true } },
@@ -273,7 +273,7 @@ const td = (t, o = {}) => ({ text: t, options: { color: C.text, ...o } });
   s.addText("The mechanism is real and exercised: an allowlist, four refusal paths, a full audit. The guarantee is not. Every policy and audit row carries hardware_rooted = false.", {
     x: 0.95, y: 5.72, w: 11.4, h: 0.6, fontFace: BODY, fontSize: 12.5, color: C.muted, margin: 0,
   });
-  s.addNotes("Concede this before being asked. It converts the weakness into evidence of judgement.");
+  s.addNotes("Concede this before being asked. It converts the weakness into evidence of judgement. If asked which version: every Spark timing was taken on pyspark 3.5.3. The pin moved to 3.5.9 on 2 November to clear PYSEC-2026-3966, and nothing was re-measured for it -- a patch release within 3.5 is unlikely to move throughput, but unlikely is not measured, and the report says so in section 7.");
 }
 
 // ========================================================== 5. CONTRIBUTIONS
