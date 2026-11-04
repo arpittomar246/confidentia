@@ -153,13 +153,27 @@ jobs:
       # refuses to release a key to code whose measurement it has not approved, and
       # this refuses to claim an image was built here without evidence a third
       # party can check. Same idea, one layer up.
+      # The visibility guard is GitHub's limit, not a choice. Persisting an
+      # attestation is refused on a user-owned private repository -- "please make
+      # this repository public" -- so on this repository the step cannot succeed,
+      # and v0.1.0 failed here once before the guard existed. It is a guard rather
+      # than a deletion because the step is correct and will run unchanged the day
+      # the repository is public or moves to an organisation that allows it.
+      #
+      # The gap is stated out loud below rather than left to a skipped step nobody
+      # reads, which is the failure mode section 8.9 of the report is about.
       - name: Attest build provenance
-        if: steps.mode.outputs.publish == 'true'
+        if: steps.mode.outputs.publish == 'true' && github.event.repository.visibility == 'public'
         uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ env.REGISTRY }}/${{ github.repository }}-${{ matrix.image }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+
+      - name: Say so when provenance was not attested
+        if: steps.mode.outputs.publish == 'true' && github.event.repository.visibility != 'public'
+        run: |
+          echo "::notice::${{ matrix.image }} was published WITHOUT a provenance attestation. GitHub does not persist attestations for user-owned private repositories. The image is unsigned: do not cite it as evidence of where it was built."
 
   release:
     needs: images
