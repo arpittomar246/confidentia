@@ -83,6 +83,26 @@ jobs:
   # have moved -- they are reported, not gated, so nothing depends on them being
   # current.
   #
+  # Re-measured 2026-11-24, after the api gate went red on three consecutive
+  # Mondays -- 9, 16 and 23 November -- on zlib1g CVE-2026-85091, a heap overflow
+  # in gz_vacate(). HIGH and fixable: Debian had published
+  # 1:1.3.dfsg+really1.3.1-1+deb13u1 and the image was still carrying +b1. Back to
+  # 0, on debian 13.8 where the three failing scans were all on 13.7.
+  #
+  # The attribution is worth stating because it is not the flattering one. Docker
+  # Hub rebuilt `python:3.11-slim` at 08:07 UTC that morning and this build pulled
+  # it at 09:19, so the patched zlib came down in the base and the `apt-get
+  # upgrade` added to docker/backend/Dockerfile in the same commit cannot be
+  # credited with the green.
+  #
+  # It is kept anyway, because it closes the gap that held the gate red for three
+  # weeks: the fix existed in Debian the whole time and the image had no way to
+  # take it until someone else rebuilt the base. The frontend has run `apk upgrade`
+  # since 2026-11-02 for exactly that reason. What neither change fixes is that
+  # nobody looked at a red scheduled job for three Mondays -- the failure mode
+  # recorded in Section 7.2 of the report, where a control fires correctly into
+  # somewhere no routine path forces a reader.
+  #
   # Spark's are Java jars *inside the pyspark wheel*; Airflow's are the upstream
   # official image and its providers. Trivy calls them fixable because a fix exists
   # in the upstream library -- not because this repository can apply it without
