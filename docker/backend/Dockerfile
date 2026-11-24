@@ -15,6 +15,30 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
+# Debian's own security updates, applied at build time.
+#
+# The base is the floating `python:3.11-slim` tag, so the usual remedy for a CVE
+# in the base -- bump to a rebuilt image -- only works once upstream rebuilds.
+# The weekly scan of 2026-11-23 went red on zlib1g CVE-2026-85091, a heap
+# overflow in gz_vacate(): Debian had published the fix as
+# 1:1.3.dfsg+really1.3.1-1+deb13u1 and the python image had not been rebuilt
+# against it. Upgrading here takes the fix on the next build instead of waiting
+# for someone else's release cycle.
+#
+# This is the Debian half of what docker/frontend/Dockerfile does with
+# `apk upgrade --no-cache`, for the same reason and after the same failure. It
+# also means the next base CVE that has a published fix is picked up by the
+# weekly rebuild with no edit here -- which is what a scheduled gate needs, since
+# the whole point of running it on a schedule is to catch advisories that land
+# while the code is standing still.
+#
+# `upgrade` rather than `dist-upgrade`: a security point release never needs to
+# remove a package, and an image build is the wrong place to let it try.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /opt/confidentia
 
 # The build tooling that ships inside the base image, brought current. Trivy found
