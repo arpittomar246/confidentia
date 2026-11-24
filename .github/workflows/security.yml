@@ -197,3 +197,91 @@ jobs:
           docker run --rm -v "$PWD:/work" -w /work \
             "$TRIVY" fs --quiet --scanners secret \
             --severity HIGH,CRITICAL --exit-code 1 .
+
+  # A scan that fails into an empty room.
+  #
+  # zlib1g CVE-2026-85091 held the api gate red for three Mondays -- 9, 16 and 23
+  # November 2026 -- and was found by a person opening the Actions tab, not by
+  # anything here. That is the failure mode this project keeps finding in itself
+  # and names in the report: a control that fires correctly, reports correctly,
+  # and reaches nobody. The scan was never the weak part.
+  #
+  # So the schedule now writes somewhere that gets read. Three choices in it:
+  #
+  #   * Only the schedule and a manual dispatch. A push failure already has
+  #     someone watching -- the person who pushed -- and a pull request shows its
+  #     own checks. Dispatch is included because it is the only way to exercise
+  #     this job without waiting a week.
+  #   * One issue for the whole episode. Opening a fresh issue every Monday would
+  #     reproduce the problem it exists to solve; further failures comment on the
+  #     open one instead.
+  #   * It closes itself when a scan passes. An issue nobody closes becomes the
+  #     next thing nobody reads.
+  notify:
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    needs: [dependencies, containers, secrets]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write          # scoped to this job; the others stay read-only
+    steps:
+      - name: Open, update or close the scan issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # `containers` is a matrix; its result is the aggregate, which is what
+          # matters here -- the issue says look, the run says which image.
+          DEPENDENCIES: ${{ needs.dependencies.result }}
+          CONTAINERS: ${{ needs.containers.result }}
+          SECRETS: ${{ needs.secrets.result }}
+        run: |
+          set -euo pipefail
+          LABEL="security-gate"
+          TITLE="Scheduled security scan is failing"
+          TODAY="$(date -u '+%Y-%m-%d')"
+
+          # Built with if-blocks rather than `[ ... ] && ...`, which returns
+          # non-zero when the test is false and would exit under `set -e`.
+          failed=""
+          if [ "$DEPENDENCIES" != "success" ]; then
+            failed="${failed}- dependencies: ${DEPENDENCIES}"$'\n'
+          fi
+          if [ "$CONTAINERS" != "success" ]; then
+            failed="${failed}- containers: ${CONTAINERS}"$'\n'
+          fi
+          if [ "$SECRETS" != "success" ]; then
+            failed="${failed}- secrets: ${SECRETS}"$'\n'
+          fi
+
+          # An issue cannot carry a label that does not exist, and `gh label
+          # create` is not idempotent -- it errors on the second run.
+          gh label create "$LABEL" --repo "$REPO" --color B60205 \
+             --description "The scheduled security scan is red" 2>/dev/null || true
+
+          number="$(gh issue list --repo "$REPO" --state open --label "$LABEL" \
+                      --json number --jq '.[0].number // empty')"
+
+          if [ -n "$failed" ]; then
+            body="$(printf '%s\n\n%s\n\n%s\n%s\n\n%s\n' \
+              "The scheduled security scan failed on ${TODAY}." \
+              "Failing jobs:" \
+              "${failed}" \
+              "Run: ${RUN_URL}" \
+              "Opened by the Security workflow itself. It comments here on each further failure, and closes itself when a scan passes.")"
+            if [ -n "$number" ]; then
+              gh issue comment "$number" --repo "$REPO" --body "$body"
+              echo "still failing; commented on #${number}"
+            else
+              gh issue create --repo "$REPO" --label "$LABEL" \
+                --title "$TITLE" --body "$body"
+              echo "opened an issue"
+            fi
+          elif [ -n "$number" ]; then
+            gh issue comment "$number" --repo "$REPO" \
+              --body "The scheduled scan passed on ${TODAY}. Closing. Run: ${RUN_URL}"
+            gh issue close "$number" --repo "$REPO"
+            echo "scan passed; closed #${number}"
+          else
+            echo "scan passed and no issue is open; nothing to do"
+          fi
